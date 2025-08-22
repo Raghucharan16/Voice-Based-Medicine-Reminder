@@ -1,0 +1,43 @@
+# Core Framework
+fastapi==0.104.1
+uvicorn==0.24.0
+streamlit==1.28.1
+
+# Database
+sqlalchemy==2.0.23
+
+# Voice Processing
+speechrecognition==3.10.0
+pyttsx3==2.90
+
+# Audio Processing (optional - may need manual installation)
+# pyaudio==0.2.11
+
+# AI/ML (Open Source)
+scikit-learn==1.3.2
+pandas==2.1.3
+numpy==1.25.2
+
+# Scheduling
+apscheduler==3.10.4
+
+# Authentication & Security
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+python-multipart==0.0.6
+
+# Date/Time
+python-dateutil==2.8.2
+
+# HTTP Requests
+requests==2.31.0
+
+# Environment Variables
+python-dotenv==1.0.0
+
+# Charts and Visualization
+plotly==5.17.0
+matplotlib==3.8.2
+
+# Utilities
+pydantic==2.5.0
