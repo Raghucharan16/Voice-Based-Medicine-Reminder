@@ -493,8 +493,13 @@ def reminders_page():
                     st.error(f"Failed to log intake: {response['error']}")
 
 def reports_page():
-    """Reports and analytics page"""
-    st.title("📈 Reports & Analytics")
+    """Reports and analytics page with AI insights"""
+    st.title("📈 Reports & AI Analytics")
+    
+    # AI Provider indicator
+    col1, col2 = st.columns([3, 1])
+    with col2:
+        st.info("🤖 AI-Powered Insights")
     
     # Adherence score
     col1, col2 = st.columns(2)
@@ -525,22 +530,82 @@ def reports_page():
             st.plotly_chart(fig, use_container_width=True)
     
     with col2:
-        # AI insights
+        # Enhanced AI insights
         st.subheader("🤖 AI Insights")
         insights_response = make_api_request("/reports/patterns")
         if insights_response["success"]:
             patterns = insights_response["data"]
             
-            if "recommendations" in patterns:
+            # Show AI provider
+            ai_provider = patterns.get("ai_provider", "local")
+            if ai_provider == "huggingface":
+                st.success("🔥 Powered by Hugging Face AI")
+            else:
+                st.info("⚡ Using Local AI Analysis")
+            
+            # Show AI-generated insights
+            if "ai_insights" in patterns:
+                st.write("**AI Analysis:**")
+                st.write(patterns["ai_insights"])
+            
+            # Show AI recommendations
+            if "ai_recommendations" in patterns:
+                st.write("**AI Recommendations:**")
+                for rec in patterns["ai_recommendations"]:
+                    st.write(f"• {rec}")
+            elif "recommendations" in patterns:
                 st.write("**Recommendations:**")
                 for rec in patterns["recommendations"]:
                     st.write(f"• {rec}")
             
+            # Show best compliance day
             if "most_compliant_day" in patterns:
                 best_day = patterns["most_compliant_day"]
                 st.info(f"Your best day: {best_day.get('day', 'N/A')} ({best_day.get('adherence', 0)}% adherence)")
         else:
             st.info("No AI insights available yet. Take more medicines to see patterns!")
+    
+    # Health Sentiment Analysis (if available)
+    st.subheader("🩺 Health Sentiment Analysis")
+    sentiment_response = make_api_request("/reports/health-sentiment")
+    if sentiment_response["success"]:
+        sentiment_data = sentiment_response["data"]
+        
+        ai_provider = sentiment_data.get("ai_provider", "local")
+        if ai_provider == "huggingface":
+            st.success("🤖 Advanced sentiment analysis with Hugging Face models")
+            
+            if "sentiment_analysis" in sentiment_data:
+                sentiment_analysis = sentiment_data["sentiment_analysis"]
+                
+                # Show sentiment distribution
+                if "sentiment_distribution" in sentiment_analysis:
+                    st.write("**Sentiment Distribution:**")
+                    sentiment_dist = sentiment_analysis["sentiment_distribution"]
+                    
+                    # Create pie chart for sentiment
+                    labels = list(sentiment_dist.keys())
+                    values = list(sentiment_dist.values())
+                    
+                    fig = px.pie(values=values, names=labels, title="Health Feedback Sentiment")
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                # Show dominant sentiment
+                dominant = sentiment_analysis.get("dominant_sentiment", "NEUTRAL")
+                if dominant == "POSITIVE":
+                    st.success(f"😊 Dominant sentiment: {dominant}")
+                elif dominant == "NEGATIVE":
+                    st.error(f"😟 Dominant sentiment: {dominant}")
+                else:
+                    st.info(f"😐 Dominant sentiment: {dominant}")
+            
+            # Show health insights
+            if "health_insights" in sentiment_data:
+                st.write("**Health Insights:**")
+                for insight in sentiment_data["health_insights"]:
+                    st.write(f"• {insight}")
+        else:
+            st.info("Basic health analysis available. Add Hugging Face API key for advanced sentiment analysis.")
     
     # Weekly trends
     st.subheader("📊 Weekly Adherence Trends")
@@ -575,6 +640,18 @@ def reports_page():
                         title='Adherence by Medicine',
                         labels={'Adherence': 'Adherence %'})
             st.plotly_chart(fig, use_container_width=True)
+    
+    # Configuration section
+    st.subheader("⚙️ AI Configuration")
+    with st.expander("Configure AI Settings"):
+        st.write("**Current AI Provider:** Hugging Face + Local Fallback")
+        st.write("**Models Used:**")
+        st.write("- Text Generation: microsoft/DialoGPT-medium")
+        st.write("- Sentiment Analysis: cardiffnlp/twitter-roberta-base-sentiment-latest")
+        st.write("- Summarization: facebook/bart-large-cnn")
+        
+        st.info("💡 **Tip:** Add your Hugging Face API key to backend/.env for enhanced AI insights!")
+        st.code('HUGGINGFACE_API_KEY=your-api-key-here', language='bash')
 
 def health_feedback_page():
     """Health feedback page"""
