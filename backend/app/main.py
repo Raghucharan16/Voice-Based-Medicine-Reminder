@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 import json
 import os
+import logging
 from datetime import datetime, timedelta
 import asyncio
 
@@ -14,8 +15,12 @@ from app.schemas import *
 from app.auth import verify_password, get_password_hash, create_access_token, verify_token
 from app.voice_service import voice_manager
 from app.reminder_service import reminder_service
-from app.local_notifications import local_notification_service
+from app.notifications import notification_service
+from app.huggingface_ai_service import huggingface_ai_service
 from app.local_ai_reports import local_ai_service
+
+# Initialize logger
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="AI Medicine Reminder & Tracker",
@@ -161,13 +166,50 @@ async def create_medicine(
     db: Session = Depends(get_db)
 ):
     """Create a new medicine"""
-    db_medicine = Medicine(**medicine.dict(), user_id=current_user.id)
-    db.add(db_medicine)
-    db.commit()
-    db.refresh(db_medicine)
-    
-    # Schedule reminders
-    await reminder_service.schedule_medicine_reminders(db_medicine.id, current_user.id)
+    try:
+        print(f"Received medicine data: {medicine.dict()}")  # Debug print
+        
+        # Convert string dates to datetime objects
+        start_date = datetime.strptime(medicine.start_date, "%Y-%m-%dT%H:%M:%S")
+        end_date = datetime.strptime(medicine.end_date, "%Y-%m-%dT%H:%M:%S") if medicine.end_date else None
+        
+        print(f"Dates converted: start={start_date}, end={end_date}")  # Debug print
+        
+        db_medicine = Medicine(
+            name=medicine.name,
+            dosage=medicine.dosage,
+            instructions=medicine.instructions,
+            frequency_per_day=medicine.frequency_per_day,
+            duration_days=medicine.duration_days,
+            start_date=start_date,
+            end_date=end_date,
+            times=medicine.times,
+            reminder_enabled=medicine.reminder_enabled,
+            user_id=current_user.id
+        )
+        
+        print("About to add to database")  # Debug print
+        db.add(db_medicine)
+        db.commit()
+        db.refresh(db_medicine)
+        
+        print("About to schedule reminders")  # Debug print
+        await reminder_service.schedule_medicine_reminders(db_medicine.id, current_user.id)
+        
+        print(f"Medicine created successfully: {db_medicine}")  # Debug print
+        return db_medicine
+        
+    except ValueError as ve:
+        error_msg = f"Date format error: {str(ve)}"
+        print(error_msg)  # Debug print
+        raise HTTPException(status_code=400, detail=error_msg)
+    except Exception as e:
+        error_msg = f"Error creating medicine: {str(e)}"
+        print(error_msg)  # Debug print
+        print(f"Exception type: {type(e)}")  # Debug print
+        import traceback
+        print(f"Traceback: {traceback.format_exc()}")  # Debug print
+        raise HTTPException(status_code=500, detail=error_msg)
     
     return db_medicine
 
@@ -342,10 +384,11 @@ async def create_health_feedback(
     if feedback.side_effects:
         medicine = db.query(Medicine).filter(Medicine.id == feedback.medicine_id).first()
         if medicine:
-            local_notification_service.send_reminder_notification(
+            notification_service.send_reminder_notification(
                 current_user.id,
                 f"Side effect alert: {medicine.name}",
                 f"Side effects: {feedback.side_effects}",
+                datetime.now(),
                 db
             )
     
@@ -398,32 +441,64 @@ async def generate_adherence_report(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Generate AI-powered adherence report"""
-    patterns = local_ai_service.analyze_patterns(current_user.id, db)
-    adherence_score = local_ai_service.calculate_adherence_score(
-        current_user.id, db, report_request.period_days
-    )
-    
-    return {
-        "adherence_score": adherence_score,
-        "patterns": patterns,
-        "period_days": report_request.period_days
-    }
+    """Generate AI-powered adherence report using Hugging Face models"""
+    # Try Hugging Face AI first, fallback to local AI
+    try:
+        ai_patterns = huggingface_ai_service.analyze_patterns_with_ai(current_user.id, db)
+        adherence_score = huggingface_ai_service.calculate_adherence_score(
+            current_user.id, db, report_request.period_days
+        )
+        
+        return {
+            "adherence_score": adherence_score,
+            "patterns": ai_patterns,
+            "period_days": report_request.period_days,
+            "ai_provider": "huggingface"
+        }
+    except Exception as e:
+        # Fallback to local AI
+        logger.warning(f"HuggingFace AI failed, using local AI: {str(e)}")
+        patterns = local_ai_service.analyze_patterns(current_user.id, db)
+        adherence_score = local_ai_service.calculate_adherence_score(
+            current_user.id, db, report_request.period_days
+        )
+        
+        return {
+            "adherence_score": adherence_score,
+            "patterns": patterns,
+            "period_days": report_request.period_days,
+            "ai_provider": "local"
+        }
 
 @app.get("/reports/weekly-summary")
 async def get_weekly_summary(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get weekly summary for caregivers"""
-    patterns = local_ai_service.analyze_patterns(current_user.id, db)
-    health_insights = local_ai_service.generate_health_insights(current_user.id, db)
-    
-    return {
-        "patterns": patterns,
-        "health_insights": health_insights,
-        "generated_at": datetime.now().isoformat()
-    }
+    """Get weekly summary with AI insights"""
+    try:
+        # Try Hugging Face AI for enhanced insights
+        patterns = huggingface_ai_service.analyze_patterns_with_ai(current_user.id, db)
+        health_insights = huggingface_ai_service.analyze_health_sentiment(current_user.id, db)
+        
+        return {
+            "patterns": patterns,
+            "health_insights": health_insights,
+            "generated_at": datetime.now().isoformat(),
+            "ai_provider": "huggingface"
+        }
+    except Exception as e:
+        # Fallback to local AI
+        logger.warning(f"HuggingFace AI failed, using local AI: {str(e)}")
+        patterns = local_ai_service.analyze_patterns(current_user.id, db)
+        health_insights = local_ai_service.generate_health_insights(current_user.id, db)
+        
+        return {
+            "patterns": patterns,
+            "health_insights": health_insights,
+            "generated_at": datetime.now().isoformat(),
+            "ai_provider": "local"
+        }
 
 # Additional routes for Streamlit integration
 
@@ -441,9 +516,31 @@ async def get_patterns(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get behavior patterns analysis"""
-    patterns = local_ai_service.analyze_patterns(current_user.id, db)
-    return patterns
+    """Get behavior patterns analysis with AI enhancement"""
+    try:
+        # Try Hugging Face AI first for enhanced insights
+        patterns = huggingface_ai_service.analyze_patterns_with_ai(current_user.id, db)
+        return {**patterns, "ai_provider": "huggingface"}
+    except Exception as e:
+        # Fallback to local AI
+        logger.warning(f"HuggingFace AI failed, using local AI: {str(e)}")
+        patterns = local_ai_service.analyze_patterns(current_user.id, db)
+        return {**patterns, "ai_provider": "local"}
+
+@app.get("/reports/health-sentiment")
+async def get_health_sentiment(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get health sentiment analysis using Hugging Face models"""
+    try:
+        sentiment_analysis = huggingface_ai_service.analyze_health_sentiment(current_user.id, db)
+        return {**sentiment_analysis, "ai_provider": "huggingface"}
+    except Exception as e:
+        # Fallback to local analysis
+        logger.warning(f"HuggingFace sentiment analysis failed: {str(e)}")
+        health_insights = local_ai_service.generate_health_insights(current_user.id, db)
+        return {**health_insights, "ai_provider": "local"}
 
 @app.get("/reminders/today")
 async def get_today_reminders(
@@ -530,8 +627,9 @@ async def test_notification(
     db: Session = Depends(get_db)
 ):
     """Test notification system"""
-    result = local_notification_service.test_notification_system()
-    return result
+    # Test system notifications
+    notification_service.show_system_notification("Test Notification", "This is a test message from the Medicine Reminder system")
+    return {"status": "success", "message": "Test notification sent"}
 
 @app.get("/feedback/")
 async def get_health_feedback(

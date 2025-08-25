@@ -1,11 +1,11 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime, time
 
 # User Schemas
 class UserBase(BaseModel):
     username: str
-    email: EmailStr
+    email: str
     full_name: str
     phone_number: Optional[str] = None
     age: Optional[int] = None
@@ -31,7 +31,7 @@ class User(UserBase):
 # Caregiver Schemas
 class CaregiverBase(BaseModel):
     name: str
-    email: EmailStr
+    email: str
     phone_number: Optional[str] = None
     relationship_to_user: str
     notification_preferences: Optional[str] = None
@@ -50,13 +50,18 @@ class Caregiver(CaregiverBase):
 class MedicineBase(BaseModel):
     name: str
     dosage: str
-    instructions: Optional[str] = None
     frequency_per_day: int
-    duration_days: Optional[int] = None
-    start_date: datetime
-    end_date: Optional[datetime] = None
     times: str  # JSON string
+    duration_days: int = 7
+    start_date: str  # ISO format string
+    end_date: Optional[str] = None  # ISO format string
+    instructions: Optional[str] = None
     reminder_enabled: bool = True
+
+    class Config:
+        json_encoders = {
+            datetime: lambda v: v.isoformat()
+        }
 
 class MedicineCreate(MedicineBase):
     pass
@@ -83,13 +88,14 @@ class Medicine(MedicineBase):
 
 # Medicine Intake Schemas
 class MedicineIntakeBase(BaseModel):
+    medicine_id: int
     scheduled_time: datetime
-    status: str
-    method: str = "manual"
+    taken: bool = False
+    missed: bool = False
     notes: Optional[str] = None
 
 class MedicineIntakeCreate(MedicineIntakeBase):
-    medicine_id: int
+    pass
 
 class MedicineIntake(MedicineIntakeBase):
     id: int

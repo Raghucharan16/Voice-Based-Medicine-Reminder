@@ -43,6 +43,23 @@ def verify_token(token: str) -> Optional[str]:
     except JWTError:
         return None
 
+from fastapi import Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+security = HTTPBearer()
+
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> dict:
+    """Get current user from JWT token"""
+    token = credentials.credentials
+    username = verify_token(token)
+    if not username:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return {"sub": username}
+
 def create_password_reset_token(email: str) -> str:
     """Create a password reset token"""
     expire = datetime.utcnow() + timedelta(hours=1)
