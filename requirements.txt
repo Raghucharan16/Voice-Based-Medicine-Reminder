@@ -1,42 +1,35 @@
-# Core Framework
-fastapi==0.104.1
-uvicorn==0.24.0
-streamlit==1.28.1
+# Core Backend Dependencies
+flask==2.3.3
+flask-cors==4.0.0
+sqlalchemy==2.0.21
 
-# Database
-sqlalchemy==2.0.23
+# Voice Processing (Optional - will fallback gracefully if not available)
+# transformers==4.35.0
+# torch==2.1.0
+# torchaudio==2.1.0
+# pyttsx3==2.90
+# speechrecognition==3.10.0
+# librosa==0.10.1
+# soundfile==0.12.1
 
-# Voice Processing
-speechrecognition==3.10.0
-pyttsx3==2.90
+# AI and ML
+# sentence-transformers==2.2.2
+numpy==1.24.3
+pandas==2.1.1
 
-# Hugging Face Integration
-transformers==4.36.2
-torch==2.1.1
-requests==2.31.0
-
-# AI/ML (Open Source)
-scikit-learn==1.3.2
-pandas==2.1.3
-numpy==1.25.2
-
-# Scheduling
+# Scheduling and Background Tasks
 apscheduler==3.10.4
 
-# Authentication & Security
-python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
-python-multipart==0.0.6
-
-# Date/Time
-python-dateutil==2.8.2
-
-# Environment Variables
-python-dotenv==1.0.0
-
-# Charts and Visualization
+# Frontend - Streamlit
+streamlit==1.28.0
+streamlit-audiorecorder==0.0.5
 plotly==5.17.0
-matplotlib==3.8.2
+altair==5.1.2
 
 # Utilities
-pydantic[email]==2.5.0
+requests==2.31.0
+python-dateutil==2.8.2
+python-decouple==3.8
+
+# Development
+pytest==7.4.3
