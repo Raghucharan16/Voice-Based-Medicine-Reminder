@@ -1,9 +1,22 @@
 import axios from 'axios';
 import * as FileSystem from 'expo-file-system';
 
-// IMPORTANT: Replace this with your PC's actual LAN IP address.
-// You can find it by running `ipconfig` in the command prompt.
-const SERVER_URL = 'http://192.168.1.23:3333';
+import Constants from 'expo-constants';
+
+// --- Dynamic IP Detection ---
+// This function automatically finds the IP of the machine running the Metro server.
+function getLocalIp() {
+  const debuggerHost = Constants.manifest?.debuggerHost;
+  if (debuggerHost) {
+    return debuggerHost.split(':').shift();
+  }
+  // Fallback for safety, but the above should work in Expo Go.
+  console.warn("Could not dynamically determine server IP. Falling back to hardcoded address.");
+  return '192.168.1.18'; 
+}
+
+const SERVER_URL = `http://${getLocalIp()}:3333`;
+console.log(`Connecting to server at: ${SERVER_URL}`);
 
 class AIService {
   static async checkHealth() {
@@ -58,6 +71,16 @@ class AIService {
 
     } catch (error) {
       console.error('Transcription error:', error);
+      throw error;
+    }
+  }
+
+  static async parseReminderText(text) {
+    try {
+      const response = await axios.post(`${SERVER_URL}/parse-reminder`, { text });
+      return response.data; // Should be { medicine: "...", time: "..." }
+    } catch (error) {
+      console.error('Reminder parsing error:', error);
       throw error;
     }
   }
