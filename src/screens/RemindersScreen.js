@@ -1,55 +1,65 @@
-import React, { useState } from 'react';
-import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  StyleSheet,
-  Alert,
-  Switch,
-} from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { LinearGradient } from 'expo-linear-gradient';
+import React, { useState, useEffect } from 'react';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, Alert, ActivityIndicator, SafeAreaView, ScrollView, Switch } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import ReminderService from '../services/ReminderService';
+import { LinearGradient } from 'expo-linear-gradient';
 import { Button } from 'react-native-paper';
 import * as Speech from 'expo-speech';
+import * as ReminderService from '../services/ReminderService';
+import VoiceService from '../services/VoiceService';
+import AIService from '../services/AIService';
 
 const RemindersScreen = () => {
-  const [reminders, setReminders] = useState([
-    {
-      id: 1,
-      medicine: 'Aspirin',
-      time: '09:00 AM',
-      enabled: true,
-      days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
-      nextReminder: new Date(2025, 8, 2, 9, 0),
-    },
-    {
-      id: 2,
-      medicine: 'Vitamin D',
-      time: '08:00 AM',
-      enabled: true,
-      days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
-      nextReminder: new Date(2025, 8, 2, 8, 0),
-    },
-    {
-      id: 3,
-      medicine: 'Metformin',
-      time: '07:00 AM',
-      enabled: false,
-      days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
-      nextReminder: new Date(2025, 8, 2, 7, 0),
-    },
-    {
-      id: 4,
-      medicine: 'Metformin',
-      time: '07:00 PM',
-      enabled: false,
-      days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
-      nextReminder: new Date(2025, 8, 1, 19, 0),
-    },
-  ]);
+  const [reminders, setReminders] = useState([]);
+  const [isRecording, setIsRecording] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+
+  useEffect(() => {
+    loadReminders();
+  }, []);
+
+  const loadReminders = async () => {
+    const storedReminders = await ReminderService.getReminders();
+    setReminders(storedReminders);
+  };
+
+  const handleVoiceCommand = async () => {
+    if (isRecording) {
+      setIsRecording(false);
+      try {
+        setIsLoading(true);
+        const uri = await VoiceService.stopRecording();
+        if (uri) {
+          const transcription = await AIService.transcribeAudio(uri);
+          console.log('Transcription:', transcription);
+          if (transcription) {
+            const reminderData = await AIService.parseReminderText(transcription);
+            if (reminderData && reminderData.medicine && reminderData.time) {
+              await addReminder(reminderData.medicine, reminderData.time);
+              // Speak confirmation
+              Speech.speak(`Reminder set for ${reminderData.medicine} at ${reminderData.time}`, { language: 'en-US' });
+            } else {
+              Alert.alert('Could not understand reminder', 'Please try again, for example: "Remind me to take Paracetamol at 10 PM"');
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Voice command processing failed:', error);
+        Alert.alert('Error', 'Could not process voice command.');
+      } finally {
+        setIsLoading(false);
+      }
+    } else {
+      setIsRecording(true);
+      await VoiceService.startRecording();
+    }
+  };
+
+  const addReminder = async (medicine, time) => {
+    const newReminder = { id: Date.now().toString(), medicine, time };
+    const updatedReminders = [...reminders, newReminder];
+    setReminders(updatedReminders);
+    await ReminderService.saveReminders(updatedReminders);
+  };
 
   const toggleReminder = async (id) => {
     const reminder = reminders.find(r => r.id === id);
@@ -115,6 +125,20 @@ const RemindersScreen = () => {
     const time = "10:00 PM";
     const phrase = `This is a test reminder. Please remember to take ${medicine} at ${time}.`;
     Speech.speak(phrase, { language: 'en-US' });
+  };
+
+  const handleReadAllReminders = () => {
+    if (reminders.length === 0) {
+      Speech.speak("You have no reminders set up yet.", { language: 'en-US' });
+      return;
+    }
+    
+    let text = `You have ${reminders.length} reminder${reminders.length > 1 ? 's' : ''} set up. `;
+    reminders.forEach((reminder, index) => {
+      text += `${index + 1}. ${reminder.medicine} at ${reminder.time}. `;
+    });
+    
+    Speech.speak(text, { language: 'en-US' });
   };
 
   const ReminderCard = ({ reminder }) => (
@@ -246,6 +270,22 @@ const RemindersScreen = () => {
         )}
       </ScrollView>
 
+      {/* Voice Command Section */}
+      <View style={styles.voiceCommandSection}>
+        <TouchableOpacity 
+          onPress={handleVoiceCommand} 
+          style={styles.micButton}
+        >
+          <Ionicons 
+            name={isRecording ? "mic-off-circle" : "mic-circle"} 
+            size={64} 
+            color={isRecording ? "#E53935" : "#4CAF50"} 
+          />
+        </TouchableOpacity>
+        {isLoading && <ActivityIndicator size="large" color="#007AFF" style={{ marginVertical: 10 }} />}
+        <Text style={styles.micLabel}>{isRecording ? 'Recording... Tap to stop.' : 'Tap to add reminder by voice'}</Text>
+      </View>
+
       {/* Info Card */}
       <View style={styles.infoCard}>
         <View style={styles.infoHeader}>
@@ -269,7 +309,9 @@ const RemindersScreen = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f8f9fa',
+    padding: 20,
+    backgroundColor: '#fff',
+    alignItems: 'center', // Center items horizontally
   },
   header: {
     padding: 20,
@@ -376,10 +418,7 @@ const styles = StyleSheet.create({
     paddingTop: 12,
   },
   testButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    marginBottom: 20,
   },
   testButtonText: {
     fontSize: 14,
@@ -403,6 +442,19 @@ const styles = StyleSheet.create({
     color: '#ccc',
     marginTop: 8,
     textAlign: 'center',
+  },
+  voiceCommandSection: {
+    alignItems: 'center',
+    marginVertical: 20,
+    width: '100%',
+  },
+  micButton: {
+    marginVertical: 15,
+  },
+  micLabel: {
+    fontSize: 16,
+    color: '#666',
+    marginBottom: 20,
   },
   infoCard: {
     backgroundColor: 'white',
