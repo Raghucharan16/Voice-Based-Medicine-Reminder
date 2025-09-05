@@ -1,4 +1,4 @@
-require('dotenv').config();
+require('dotenv').config({ path: require('path').resolve(__dirname, '.env') });
 const express = require('express');
 const multer = require('multer');
 const fs = require('fs');
@@ -67,9 +67,75 @@ app.post('/transcribe', upload.single('audio'), async (req, res) => {
     res.status(500).json({ error: 'Transcription failed', message: errorMessage });
   } finally {
     // Clean up the uploaded file
-    fs.unlinkSync(audioFilePath);
+    if (fs.existsSync(audioFilePath)) {
+      fs.unlinkSync(audioFilePath);
+    }
   }
 });
+
+// Endpoint to parse reminder text using an LLM
+app.post('/parse-reminder', async (req, res) => {
+  const { text } = req.body;
+  console.log('Received text to parse:', text);
+
+  if (!text) {
+    return res.status(400).json({ error: 'No text provided.' });
+  }
+
+  if (!HF_API_KEY) {
+    console.log('Demo mode: Returning mock reminder data.');
+    // Simulate parsing for a common phrase
+    if (text.toLowerCase().includes('paracetamol at 10 pm')) {
+      return res.json({ medicine: 'Paracetamol', time: '10:00 PM' });
+    }
+    return res.json({ medicine: 'Medicine', time: '12:00 PM' });
+  }
+
+  const prompt = `You are a function calling API. From the user's request, extract the medicine name and the time for a reminder. Respond with only a valid JSON object in the format {"medicine": "MEDICINE_NAME", "time": "HH:MM AM/PM"}. Do not add any other text.
+
+User request: "${text}"
+
+JSON response:`;
+
+  try {
+    const response = await axios.post(
+      'https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2',
+      {
+        inputs: prompt,
+        parameters: { max_new_tokens: 50, temperature: 0.1 }
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${HF_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        timeout: 30000,
+      }
+    );
+
+    const generatedText = response.data[0].generated_text.replace(prompt, '').trim();
+    console.log('LLM raw response:', generatedText);
+
+    // Find the JSON part of the response, as the model might add extra text
+    const jsonMatch = generatedText.match(/\{.*\}/);
+    if (jsonMatch) {
+      const reminderData = JSON.parse(jsonMatch[0]);
+      console.log('Parsed reminder data:', reminderData);
+      res.json(reminderData);
+    } else {
+      throw new Error('Could not parse JSON from LLM response.');
+    }
+
+  } catch (error) {
+    const errorMessage = error.response ? JSON.stringify(error.response.data) : error.message;
+    console.error('Reminder parsing error:', errorMessage);
+    res.status(500).json({
+      error: 'Reminder parsing failed',
+      message: errorMessage
+    });
+  }
+});
+
 
 // Generate adherence report using a Hugging Face LLM
 app.post('/report', async (req, res) => {
