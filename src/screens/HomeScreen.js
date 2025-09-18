@@ -15,16 +15,27 @@ import VoiceService from '../services/VoiceService';
 import TTSService from '../services/TTSService';
 import ReminderService from '../services/ReminderService';
 import AIService from '../services/AIService';
+import DataService from '../services/DataService';
+import NotificationService from '../services/NotificationService';
+import VoiceAssistant from '../components/VoiceAssistant';
 
 const HomeScreen = () => {
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [lastTranscription, setLastTranscription] = useState('');
   const [serverStatus, setServerStatus] = useState('Checking...');
+  const [showVoiceAssistant, setShowVoiceAssistant] = useState(false);
+  const [todayStats, setTodayStats] = useState({
+    medicines: 0,
+    taken: 0,
+    pending: 0
+  });
 
   useEffect(() => {
     checkServerConnection();
     requestPermissions();
+    initializeServices();
+    loadTodayStats();
   }, []);
 
   const checkServerConnection = async () => {
@@ -42,6 +53,36 @@ const HomeScreen = () => {
       await ReminderService.requestPermissions();
     } catch (error) {
       console.warn('Permission error:', error);
+    }
+  };
+
+  const initializeServices = async () => {
+    try {
+      await NotificationService.initialize();
+    } catch (error) {
+      console.warn('Service initialization error:', error);
+    }
+  };
+
+  const loadTodayStats = async () => {
+    try {
+      const stats = await DataService.getAdherenceStats(1); // Today only
+      setTodayStats({
+        medicines: await getTodayRemindersCount(),
+        taken: stats.takenOnTime + stats.takenLate,
+        pending: Math.max(0, await getTodayRemindersCount() - stats.takenOnTime - stats.takenLate)
+      });
+    } catch (error) {
+      console.warn('Error loading stats:', error);
+    }
+  };
+
+  const getTodayRemindersCount = async () => {
+    try {
+      const reminders = await DataService.getReminders();
+      return reminders.filter(r => r.status === 'active').length;
+    } catch (error) {
+      return 0;
     }
   };
 
@@ -85,6 +126,28 @@ const HomeScreen = () => {
     }
   };
 
+  const handleReminderCreated = async (reminder) => {
+    try {
+      // Save reminder to local storage
+      const savedReminder = await DataService.saveReminder(reminder);
+      
+      // Schedule notification
+      await NotificationService.scheduleMedicationReminder(savedReminder);
+      
+      // Refresh stats
+      await loadTodayStats();
+      
+      Alert.alert(
+        'Reminder Created! 🎉',
+        `I've set up a reminder for ${reminder.medicine} at ${reminder.time}`,
+        [{ text: 'Great!', style: 'default' }]
+      );
+    } catch (error) {
+      console.error('Error creating reminder:', error);
+      Alert.alert('Error', 'Failed to create reminder: ' + error.message);
+    }
+  };
+
   const QuickActionCard = ({ icon, title, subtitle, onPress, color, disabled }) => (
     <TouchableOpacity
       style={[styles.actionCard, disabled && styles.disabledCard]}
@@ -114,44 +177,23 @@ const HomeScreen = () => {
           </View>
         </LinearGradient>
 
-        {/* Voice Recording Section */}
+        {/* Voice Assistant Section */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>🎤 Voice Medicine Log</Text>
+          <Text style={styles.sectionTitle}>🤖 AI Voice Assistant</Text>
           <TouchableOpacity
-            style={[
-              styles.recordButton,
-              isRecording && styles.recordingButton,
-              isProcessing && styles.processingButton
-            ]}
-            onPress={handleRecord}
-            disabled={isRecording || isProcessing}
+            style={styles.voiceAssistantButton}
+            onPress={() => setShowVoiceAssistant(true)}
           >
             <LinearGradient
-              colors={
-                isRecording 
-                  ? ['#FF6B6B', '#FF5252'] 
-                  : isProcessing 
-                  ? ['#FFA726', '#FF9800']
-                  : ['#4CAF50', '#45A049']
-              }
-              style={styles.recordButtonGradient}
+              colors={['#6A5ACD', '#9370DB']}
+              style={styles.voiceAssistantGradient}
             >
-              {isRecording ? (
-                <>
-                  <Ionicons name="radio-button-on" size={32} color="white" />
-                  <Text style={styles.recordButtonText}>Recording...</Text>
-                </>
-              ) : isProcessing ? (
-                <>
-                  <ActivityIndicator size="large" color="white" />
-                  <Text style={styles.recordButtonText}>Processing...</Text>
-                </>
-              ) : (
-                <>
-                  <Ionicons name="mic" size={32} color="white" />
-                  <Text style={styles.recordButtonText}>Record Medicine Log</Text>
-                </>
-              )}
+              <Ionicons name="chatbubbles" size={32} color="white" />
+              <View style={styles.assistantTextContainer}>
+                <Text style={styles.assistantButtonTitle}>Start Voice Conversation</Text>
+                <Text style={styles.assistantButtonSubtitle}>Add reminders with natural speech</Text>
+              </View>
+              <Ionicons name="arrow-forward" size={24} color="white" />
             </LinearGradient>
           </TouchableOpacity>
 
@@ -190,21 +232,28 @@ const HomeScreen = () => {
           <View style={styles.summaryCard}>
             <View style={styles.summaryRow}>
               <View style={styles.summaryItem}>
-                <Text style={styles.summaryNumber}>3</Text>
+                <Text style={styles.summaryNumber}>{todayStats.medicines}</Text>
                 <Text style={styles.summaryLabel}>Medicines</Text>
               </View>
               <View style={styles.summaryItem}>
-                <Text style={styles.summaryNumber}>2</Text>
+                <Text style={styles.summaryNumber}>{todayStats.taken}</Text>
                 <Text style={styles.summaryLabel}>Taken</Text>
               </View>
               <View style={styles.summaryItem}>
-                <Text style={styles.summaryNumber}>1</Text>
+                <Text style={styles.summaryNumber}>{todayStats.pending}</Text>
                 <Text style={styles.summaryLabel}>Pending</Text>
               </View>
             </View>
           </View>
         </View>
       </ScrollView>
+      
+      {/* Voice Assistant Modal */}
+      <VoiceAssistant
+        visible={showVoiceAssistant}
+        onClose={() => setShowVoiceAssistant(false)}
+        onReminderCreated={handleReminderCreated}
+      />
     </SafeAreaView>
   );
 };
@@ -338,6 +387,37 @@ const styles = StyleSheet.create({
   },
   disabledText: {
     color: '#999',
+  },
+  voiceAssistantButton: {
+    borderRadius: 15,
+    overflow: 'hidden',
+    elevation: 5,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 5,
+  },
+  voiceAssistantGradient: {
+    paddingVertical: 20,
+    paddingHorizontal: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  assistantTextContainer: {
+    flex: 1,
+    marginLeft: 15,
+  },
+  assistantButtonTitle: {
+    color: 'white',
+    fontSize: 18,
+    fontWeight: '600',
+  },
+  assistantButtonSubtitle: {
+    color: 'white',
+    fontSize: 14,
+    opacity: 0.9,
+    marginTop: 2,
   },
   summaryCard: {
     backgroundColor: 'white',

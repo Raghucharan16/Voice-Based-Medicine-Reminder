@@ -15,6 +15,8 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import TTSService from '../services/TTSService';
+import DataService from '../services/DataService';
+import NotificationService from '../services/NotificationService';
 
 const SettingsScreen = () => {
   const [notifications, setNotifications] = useState(true);
@@ -25,6 +27,14 @@ const SettingsScreen = () => {
   const [showNameModal, setShowNameModal] = useState(false);
   const [userName, setUserName] = useState('User');
   const [tempUserName, setTempUserName] = useState('');
+  const [showCaretakerModal, setShowCaretakerModal] = useState(false);
+  const [caretakers, setCaretakers] = useState([]);
+  const [newCaretaker, setNewCaretaker] = useState({
+    name: '',
+    email: '',
+    phone: '',
+    relationship: ''
+  });
 
   const settings = [
     {
@@ -113,11 +123,73 @@ const SettingsScreen = () => {
         {
           text: 'Delete',
           style: 'destructive',
-          onPress: () => Alert.alert('Success', 'All data cleared successfully!'),
+          onPress: async () => {
+            try {
+              await DataService.clearAllData();
+              await NotificationService.cancelAllNotifications();
+              Alert.alert('Success', 'All data cleared successfully!');
+            } catch (error) {
+              Alert.alert('Error', 'Failed to clear data: ' + error.message);
+            }
+          },
         },
       ]
     );
   };
+
+  const loadCaretakers = async () => {
+    try {
+      const savedCaretakers = await DataService.getCaretakers();
+      setCaretakers(savedCaretakers);
+    } catch (error) {
+      console.error('Error loading caretakers:', error);
+    }
+  };
+
+  const handleAddCaretaker = async () => {
+    try {
+      if (!newCaretaker.name || !newCaretaker.email) {
+        Alert.alert('Error', 'Name and email are required');
+        return;
+      }
+
+      const savedCaretaker = await DataService.saveCaretaker(newCaretaker);
+      setCaretakers(prev => [...prev, savedCaretaker]);
+      setNewCaretaker({ name: '', email: '', phone: '', relationship: '' });
+      setShowCaretakerModal(false);
+      Alert.alert('Success', 'Caretaker added successfully!');
+    } catch (error) {
+      Alert.alert('Error', 'Failed to add caretaker: ' + error.message);
+    }
+  };
+
+  const handleRemoveCaretaker = async (caretakerId) => {
+    Alert.alert(
+      'Remove Caretaker',
+      'Are you sure you want to remove this caretaker?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await DataService.updateCaretaker(caretakerId, { active: false });
+              setCaretakers(prev => prev.filter(c => c.id !== caretakerId));
+              Alert.alert('Success', 'Caretaker removed successfully!');
+            } catch (error) {
+              Alert.alert('Error', 'Failed to remove caretaker: ' + error.message);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  // Load caretakers on component mount
+  React.useEffect(() => {
+    loadCaretakers();
+  }, []);
 
   const handleAbout = () => {
     Alert.alert(
@@ -207,6 +279,57 @@ const SettingsScreen = () => {
             </View>
             <Ionicons name="pencil" size={20} color="#9C27B0" />
           </TouchableOpacity>
+        </View>
+
+        {/* Caretaker Management */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>👥 Caretaker Management</Text>
+          <View style={styles.settingsCard}>
+            <TouchableOpacity
+              style={styles.addCaretakerButton}
+              onPress={() => setShowCaretakerModal(true)}
+            >
+              <View style={styles.addCaretakerIcon}>
+                <Ionicons name="person-add" size={24} color="#2196F3" />
+              </View>
+              <View style={styles.addCaretakerInfo}>
+                <Text style={styles.addCaretakerTitle}>Add Caretaker</Text>
+                <Text style={styles.addCaretakerSubtitle}>
+                  Add someone to receive medication alerts
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color="#ccc" />
+            </TouchableOpacity>
+            
+            {caretakers.filter(c => c.active).map((caretaker, index) => (
+              <View key={caretaker.id} style={styles.caretakerItem}>
+                <View style={styles.caretakerIcon}>
+                  <Ionicons name="person-circle" size={40} color="#9C27B0" />
+                </View>
+                <View style={styles.caretakerInfo}>
+                  <Text style={styles.caretakerName}>{caretaker.name}</Text>
+                  <Text style={styles.caretakerEmail}>{caretaker.email}</Text>
+                  {caretaker.relationship && (
+                    <Text style={styles.caretakerRelation}>{caretaker.relationship}</Text>
+                  )}
+                </View>
+                <TouchableOpacity
+                  onPress={() => handleRemoveCaretaker(caretaker.id)}
+                  style={styles.removeButton}
+                >
+                  <Ionicons name="trash" size={18} color="#FF5252" />
+                </TouchableOpacity>
+              </View>
+            ))}
+            
+            {caretakers.filter(c => c.active).length === 0 && (
+              <View style={styles.emptyCaretakers}>
+                <Text style={styles.emptyCaretakersText}>
+                  No caretakers added yet. Add someone to receive alerts when you miss medications.
+                </Text>
+              </View>
+            )}
+          </View>
         </View>
 
         {/* Settings Categories */}
@@ -347,6 +470,75 @@ const SettingsScreen = () => {
               </TouchableOpacity>
             </View>
           </View>
+        </View>
+      </Modal>
+
+      {/* Caretaker Add Modal */}
+      <Modal
+        visible={showCaretakerModal}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setShowCaretakerModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <ScrollView contentContainerStyle={styles.modalScrollContent}>
+            <View style={styles.caretakerModalContent}>
+              <Text style={styles.modalTitle}>Add Caretaker</Text>
+              <Text style={styles.modalSubtitle}>
+                This person will receive alerts when you miss medications
+              </Text>
+              
+              <TextInput
+                style={styles.modalInput}
+                value={newCaretaker.name}
+                onChangeText={(text) => setNewCaretaker(prev => ({...prev, name: text}))}
+                placeholder="Full Name *"
+                autoFocus={true}
+              />
+              
+              <TextInput
+                style={styles.modalInput}
+                value={newCaretaker.email}
+                onChangeText={(text) => setNewCaretaker(prev => ({...prev, email: text}))}
+                placeholder="Email Address *"
+                keyboardType="email-address"
+                autoCapitalize="none"
+              />
+              
+              <TextInput
+                style={styles.modalInput}
+                value={newCaretaker.phone}
+                onChangeText={(text) => setNewCaretaker(prev => ({...prev, phone: text}))}
+                placeholder="Phone Number (optional)"
+                keyboardType="phone-pad"
+              />
+              
+              <TextInput
+                style={styles.modalInput}
+                value={newCaretaker.relationship}
+                onChangeText={(text) => setNewCaretaker(prev => ({...prev, relationship: text}))}
+                placeholder="Relationship (e.g., Family, Friend)"
+              />
+              
+              <View style={styles.modalButtons}>
+                <TouchableOpacity
+                  style={[styles.modalButton, styles.modalCancelButton]}
+                  onPress={() => {
+                    setShowCaretakerModal(false);
+                    setNewCaretaker({ name: '', email: '', phone: '', relationship: '' });
+                  }}
+                >
+                  <Text style={styles.modalCancelText}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.modalButton, styles.modalSaveButton]}
+                  onPress={handleAddCaretaker}
+                >
+                  <Text style={styles.modalSaveText}>Add</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </ScrollView>
         </View>
       </Modal>
     </SafeAreaView>
@@ -563,6 +755,97 @@ const styles = StyleSheet.create({
   modalSaveText: {
     color: 'white',
     fontWeight: '600',
+  },
+  modalScrollContent: {
+    flexGrow: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  caretakerModalContent: {
+    backgroundColor: 'white',
+    borderRadius: 12,
+    padding: 24,
+    width: '90%',
+    maxWidth: 400,
+    maxHeight: '80%',
+  },
+  modalSubtitle: {
+    fontSize: 14,
+    color: '#666',
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  addCaretakerButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+  },
+  addCaretakerIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#E3F2FD',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 16,
+  },
+  addCaretakerInfo: {
+    flex: 1,
+  },
+  addCaretakerTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#2c3e50',
+  },
+  addCaretakerSubtitle: {
+    fontSize: 14,
+    color: '#666',
+    marginTop: 2,
+  },
+  caretakerItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+  },
+  caretakerIcon: {
+    marginRight: 16,
+  },
+  caretakerInfo: {
+    flex: 1,
+  },
+  caretakerName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#2c3e50',
+  },
+  caretakerEmail: {
+    fontSize: 14,
+    color: '#666',
+    marginTop: 2,
+  },
+  caretakerRelation: {
+    fontSize: 12,
+    color: '#9C27B0',
+    marginTop: 2,
+  },
+  removeButton: {
+    padding: 8,
+    borderRadius: 16,
+    backgroundColor: '#FFEBEE',
+  },
+  emptyCaretakers: {
+    padding: 20,
+    alignItems: 'center',
+  },
+  emptyCaretakersText: {
+    fontSize: 14,
+    color: '#666',
+    textAlign: 'center',
+    lineHeight: 20,
   },
 });
 

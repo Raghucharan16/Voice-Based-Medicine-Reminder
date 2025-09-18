@@ -1,92 +1,101 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, Alert, ActivityIndicator, SafeAreaView, ScrollView, Switch } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Alert, SafeAreaView, ScrollView, Switch } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Button } from 'react-native-paper';
-import * as Speech from 'expo-speech';
-import * as ReminderService from '../services/ReminderService';
-import VoiceService from '../services/VoiceService';
-import AIService from '../services/AIService';
+import DataService from '../services/DataService';
+import NotificationService from '../services/NotificationService';
+import TTSService from '../services/TTSService';
+import MedicationFeedback from '../components/MedicationFeedback';
 
 const RemindersScreen = () => {
   const [reminders, setReminders] = useState([]);
-  const [isRecording, setIsRecording] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
+  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
+  const [selectedMedication, setSelectedMedication] = useState(null);
 
   useEffect(() => {
     loadReminders();
+    setupNotificationListeners();
   }, []);
 
   const loadReminders = async () => {
-    const storedReminders = await ReminderService.getReminders();
-    setReminders(storedReminders);
-  };
-
-  const handleVoiceCommand = async () => {
-    if (isRecording) {
-      setIsRecording(false);
-      try {
-        setIsLoading(true);
-        const uri = await VoiceService.stopRecording();
-        if (uri) {
-          const transcription = await AIService.transcribeAudio(uri);
-          console.log('Transcription:', transcription);
-          if (transcription) {
-            const reminderData = await AIService.parseReminderText(transcription);
-            if (reminderData && reminderData.medicine && reminderData.time) {
-              await addReminder(reminderData.medicine, reminderData.time);
-              // Speak confirmation
-              Speech.speak(`Reminder set for ${reminderData.medicine} at ${reminderData.time}`, { language: 'en-US' });
-            } else {
-              Alert.alert('Could not understand reminder', 'Please try again, for example: "Remind me to take Paracetamol at 10 PM"');
-            }
-          }
-        }
-      } catch (error) {
-        console.error('Voice command processing failed:', error);
-        Alert.alert('Error', 'Could not process voice command.');
-      } finally {
-        setIsLoading(false);
-      }
-    } else {
-      setIsRecording(true);
-      await VoiceService.startRecording();
+    try {
+      const storedReminders = await DataService.getReminders();
+      setReminders(storedReminders);
+    } catch (error) {
+      console.error('Error loading reminders:', error);
     }
   };
 
-  const addReminder = async (medicine, time) => {
-    const newReminder = { id: Date.now().toString(), medicine, time };
-    const updatedReminders = [...reminders, newReminder];
-    setReminders(updatedReminders);
-    await ReminderService.saveReminders(updatedReminders);
+  const setupNotificationListeners = () => {
+    // Listen for notification responses
+    const subscription = NotificationService.addNotificationResponseListener((response) => {
+      const { data } = response.notification.request.content;
+      
+      if (data.type === 'medication_reminder') {
+        // Show feedback modal after a delay
+        setTimeout(() => {
+          setSelectedMedication({
+            id: data.reminderId,
+            medicine: data.medicine,
+            dosage: data.dosage
+          });
+          setShowFeedbackModal(true);
+        }, 60000); // Show feedback prompt after 1 minute
+      }
+    });
+
+    return () => subscription.remove();
+  };
+
+  const markMedicationTaken = async (reminder) => {
+    try {
+      // Record medication as taken
+      await DataService.recordMedicationTaken(reminder.id, new Date().toISOString());
+      
+      // Schedule feedback prompt
+      await NotificationService.scheduleFeedbackPrompt(
+        reminder.id,
+        reminder.medicine,
+        60 // 60 minutes after taking
+      );
+      
+      Alert.alert(
+        'Medication Taken! ✅',
+        `Great job taking your ${reminder.medicine}. We'll check how you're feeling later.`,
+        [{ text: 'OK', style: 'default' }]
+      );
+      
+      // Speak confirmation
+      await TTSService.speak(`Great job taking your ${reminder.medicine}!`);
+      
+    } catch (error) {
+      console.error('Error marking medication taken:', error);
+      Alert.alert('Error', 'Failed to record medication: ' + error.message);
+    }
+  };
+
+  const handleFeedbackSubmitted = async (feedbackData) => {
+    console.log('Feedback submitted:', feedbackData);
+    // Refresh reminders or update UI as needed
+    await loadReminders();
   };
 
   const toggleReminder = async (id) => {
-    const reminder = reminders.find(r => r.id === id);
-    
     try {
-      if (!reminder.enabled) {
-        // Schedule the reminder
-        const nextReminderDate = new Date();
-        nextReminderDate.setHours(reminder.nextReminder.getHours());
-        nextReminderDate.setMinutes(reminder.nextReminder.getMinutes());
-        nextReminderDate.setSeconds(0);
-        
-        // If time has passed today, schedule for tomorrow
-        if (nextReminderDate < new Date()) {
-          nextReminderDate.setDate(nextReminderDate.getDate() + 1);
-        }
-
-        await ReminderService.scheduleReminder(
-          nextReminderDate,
-          'Medicine Reminder',
-          `Time to take your ${reminder.medicine}`
-        );
+      const updatedReminder = await DataService.updateReminder(id, { 
+        status: reminders.find(r => r.id === id).status === 'active' ? 'paused' : 'active' 
+      });
+      
+      if (updatedReminder.status === 'active') {
+        // Schedule notification
+        await NotificationService.scheduleMedicationReminder(updatedReminder);
+      } else {
+        // Cancel notification (would need to store notification ID)
+        // await NotificationService.cancelNotification(notificationId);
       }
-
-      setReminders(reminders.map(r => 
-        r.id === id ? { ...r, enabled: !r.enabled } : r
-      ));
+      
+      await loadReminders(); // Refresh list
+      
     } catch (error) {
       Alert.alert('Error', 'Failed to toggle reminder: ' + error.message);
     }
@@ -94,15 +103,10 @@ const RemindersScreen = () => {
 
   const testReminder = async (reminder) => {
     try {
-      const testDate = new Date(Date.now() + 5000); // 5 seconds from now
-      await ReminderService.scheduleReminder(
-        testDate,
-        'Test Reminder',
-        `Test: Time to take your ${reminder.medicine}`
-      );
-      Alert.alert('Test Scheduled', 'Test reminder will appear in 5 seconds');
+      await NotificationService.sendTestNotification();
+      Alert.alert('Test Sent! 📱', 'Check if the notification appeared correctly.');
     } catch (error) {
-      Alert.alert('Error', 'Failed to schedule test: ' + error.message);
+      Alert.alert('Error', 'Failed to send test: ' + error.message);
     }
   };
 
@@ -120,16 +124,16 @@ const RemindersScreen = () => {
     }
   };
 
-  const handleTestReminderSound = () => {
+  const handleTestReminderSound = async () => {
     const medicine = "Paracetamol";
     const time = "10:00 PM";
     const phrase = `This is a test reminder. Please remember to take ${medicine} at ${time}.`;
-    Speech.speak(phrase, { language: 'en-US' });
+    await TTSService.speak(phrase);
   };
 
-  const handleReadAllReminders = () => {
+  const handleReadAllReminders = async () => {
     if (reminders.length === 0) {
-      Speech.speak("You have no reminders set up yet.", { language: 'en-US' });
+      await TTSService.speak("You have no reminders set up yet.");
       return;
     }
     
@@ -138,72 +142,89 @@ const RemindersScreen = () => {
       text += `${index + 1}. ${reminder.medicine} at ${reminder.time}. `;
     });
     
-    Speech.speak(text, { language: 'en-US' });
+    await TTSService.speak(text);
   };
 
-  const ReminderCard = ({ reminder }) => (
-    <View style={[styles.reminderCard, !reminder.enabled && styles.disabledCard]}>
-      <View style={styles.cardHeader}>
-        <View style={styles.reminderInfo}>
-          <Text style={[styles.medicineName, !reminder.enabled && styles.disabledText]}>
-            {reminder.medicine}
-          </Text>
-          <Text style={[styles.reminderTime, !reminder.enabled && styles.disabledText]}>
-            {reminder.time}
-          </Text>
-        </View>
-        <Switch
-          value={reminder.enabled}
-          onValueChange={() => toggleReminder(reminder.id)}
-          trackColor={{ false: '#ccc', true: '#4CAF50' }}
-          thumbColor={reminder.enabled ? '#2E7D32' : '#f4f3f4'}
-        />
-      </View>
-
-      <View style={styles.reminderDetails}>
-        <View style={styles.detailRow}>
-          <Ionicons 
-            name="calendar-outline" 
-            size={16} 
-            color={reminder.enabled ? '#666' : '#ccc'} 
+  const ReminderCard = ({ reminder }) => {
+    const isActive = reminder.status === 'active';
+    
+    return (
+      <View style={[styles.reminderCard, !isActive && styles.disabledCard]}>
+        <View style={styles.cardHeader}>
+          <View style={styles.reminderInfo}>
+            <Text style={[styles.medicineName, !isActive && styles.disabledText]}>
+              💊 {reminder.medicine}
+            </Text>
+            <Text style={[styles.reminderTime, !isActive && styles.disabledText]}>
+              🕐 {reminder.time}
+            </Text>
+            {reminder.dosage && (
+              <Text style={[styles.dosageText, !isActive && styles.disabledText]}>
+                💉 {reminder.dosage}
+              </Text>
+            )}
+          </View>
+          <Switch
+            value={isActive}
+            onValueChange={() => toggleReminder(reminder.id)}
+            trackColor={{ false: '#ccc', true: '#4CAF50' }}
+            thumbColor={isActive ? '#2E7D32' : '#f4f3f4'}
           />
-          <Text style={[styles.detailText, !reminder.enabled && styles.disabledText]}>
-            {reminder.days.join(', ')}
-          </Text>
         </View>
-        
-        {reminder.enabled && (
+
+        <View style={styles.reminderDetails}>
           <View style={styles.detailRow}>
-            <Ionicons name="time-outline" size={16} color="#666" />
-            <Text style={styles.detailText}>
-              Next: {formatNextReminder(reminder.nextReminder)}
+            <Ionicons 
+              name="calendar-outline" 
+              size={16} 
+              color={isActive ? '#666' : '#ccc'} 
+            />
+            <Text style={[styles.detailText, !isActive && styles.disabledText]}>
+              Daily reminder
             </Text>
           </View>
-        )}
-      </View>
+          
+          <View style={styles.detailRow}>
+            <Ionicons 
+              name="time-outline" 
+              size={16} 
+              color={isActive ? '#666' : '#ccc'} 
+            />
+            <Text style={[styles.detailText, !isActive && styles.disabledText]}>
+              Created: {new Date(reminder.createdAt).toLocaleDateString()}
+            </Text>
+          </View>
+        </View>
 
-      {reminder.enabled && (
         <View style={styles.cardActions}>
           <TouchableOpacity 
-            style={styles.testButton}
+            style={styles.actionButton}
+            onPress={() => markMedicationTaken(reminder)}
+          >
+            <Ionicons name="checkmark-circle" size={16} color="#4CAF50" />
+            <Text style={[styles.actionButtonText, { color: '#4CAF50' }]}>Mark Taken</Text>
+          </TouchableOpacity>
+          
+          <TouchableOpacity 
+            style={styles.actionButton}
             onPress={() => testReminder(reminder)}
           >
             <Ionicons name="notifications-outline" size={16} color="#2196F3" />
-            <Text style={styles.testButtonText}>Test</Text>
+            <Text style={[styles.actionButtonText, { color: '#2196F3' }]}>Test</Text>
           </TouchableOpacity>
         </View>
-      )}
-    </View>
-  );
+      </View>
+    );
+  };
 
-  const activeReminders = reminders.filter(r => r.enabled).length;
+  const activeReminders = reminders.filter(r => r.status === 'active').length;
   const totalReminders = reminders.length;
 
   return (
     <SafeAreaView style={styles.container}>
       {/* Header */}
       <LinearGradient colors={['#FF9800', '#F57C00']} style={styles.header}>
-        <Text style={styles.headerTitle}>Reminders</Text>
+        <Text style={styles.headerTitle}>Medicine Reminders</Text>
         <Text style={styles.headerSubtitle}>
           {activeReminders} of {totalReminders} reminders active
         </Text>
@@ -264,44 +285,36 @@ const RemindersScreen = () => {
             <Ionicons name="alarm-outline" size={64} color="#ccc" />
             <Text style={styles.emptyText}>No reminders set</Text>
             <Text style={styles.emptySubtext}>
-              Add medicines to automatically create reminders
+              Use the Voice Assistant on the Home screen to add medication reminders
             </Text>
           </View>
         )}
       </ScrollView>
 
-      {/* Voice Command Section */}
-      <View style={styles.voiceCommandSection}>
-        <TouchableOpacity 
-          onPress={handleVoiceCommand} 
-          style={styles.micButton}
-        >
-          <Ionicons 
-            name={isRecording ? "mic-off-circle" : "mic-circle"} 
-            size={64} 
-            color={isRecording ? "#E53935" : "#4CAF50"} 
-          />
-        </TouchableOpacity>
-        {isLoading && <ActivityIndicator size="large" color="#007AFF" style={{ marginVertical: 10 }} />}
-        <Text style={styles.micLabel}>{isRecording ? 'Recording... Tap to stop.' : 'Tap to add reminder by voice'}</Text>
-      </View>
-
       {/* Info Card */}
       <View style={styles.infoCard}>
         <View style={styles.infoHeader}>
           <Ionicons name="information-circle" size={20} color="#2196F3" />
-          <Text style={styles.infoTitle}>Reminder Tips</Text>
+          <Text style={styles.infoTitle}>💡 Reminder Tips</Text>
         </View>
         <Text style={styles.infoText}>
-          • Make sure notifications are enabled for this app
+          • Mark medications as taken to track adherence
         </Text>
         <Text style={styles.infoText}>
-          • Test reminders to ensure they work properly
+          • Test notifications to ensure they work properly
         </Text>
         <Text style={styles.infoText}>
-          • Voice reminders work even when the app is closed
+          • Provide feedback to help improve your care
         </Text>
       </View>
+
+      {/* Medication Feedback Modal */}
+      <MedicationFeedback
+        visible={showFeedbackModal}
+        onClose={() => setShowFeedbackModal(false)}
+        medication={selectedMedication}
+        onFeedbackSubmitted={handleFeedbackSubmitted}
+      />
     </SafeAreaView>
   );
 };
@@ -417,12 +430,23 @@ const styles = StyleSheet.create({
     borderTopColor: '#f0f0f0',
     paddingTop: 12,
   },
-  testButton: {
-    marginBottom: 20,
-  },
-  testButtonText: {
+  dosageText: {
     fontSize: 14,
-    color: '#2196F3',
+    color: '#9C27B0',
+    fontWeight: '500',
+    marginTop: 2,
+  },
+  actionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    backgroundColor: '#f8f9fa',
+    marginLeft: 8,
+  },
+  actionButtonText: {
+    fontSize: 12,
     marginLeft: 4,
     fontWeight: '600',
   },
