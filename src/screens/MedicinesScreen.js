@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -12,37 +12,49 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
+import DataService from '../services/DataService';
+import NotificationService from '../services/NotificationService';
 
 const MedicinesScreen = () => {
-  const [medicines, setMedicines] = useState([
-    {
-      id: 1,
-      name: 'Aspirin',
-      dosage: '100mg',
-      frequency: 'Once daily',
-      time: '09:00 AM',
-      status: 'active',
-      notes: 'Take with food'
-    },
-    {
-      id: 2,
-      name: 'Vitamin D',
-      dosage: '1000 IU',
-      frequency: 'Once daily',
-      time: '08:00 AM',
-      status: 'active',
-      notes: 'Best absorbed with fats'
-    },
-    {
-      id: 3,
-      name: 'Metformin',
-      dosage: '500mg',
-      frequency: 'Twice daily',
-      time: '07:00 AM, 07:00 PM',
-      status: 'paused',
-      notes: 'Monitor blood sugar'
+  const [medicines, setMedicines] = useState([]);
+  
+  useEffect(() => {
+    loadMedicines();
+    
+    // Reload when screen comes into focus
+    const interval = setInterval(loadMedicines, 2000); // Sync every 2 seconds
+    return () => clearInterval(interval);
+  }, []);
+  
+  const loadMedicines = async () => {
+    try {
+      const reminders = await DataService.getReminders();
+      
+      // Convert reminders to medicines format and remove duplicates
+      const uniqueMedicines = [];
+      const seenNames = new Set();
+      
+      reminders.forEach(reminder => {
+        const key = `${reminder.medicine.toLowerCase()}-${reminder.time}`;
+        if (!seenNames.has(key)) {
+          seenNames.add(key);
+          uniqueMedicines.push({
+            id: reminder.id,
+            name: reminder.medicine,
+            dosage: reminder.dosage || 'As prescribed',
+            frequency: reminder.frequency || 'daily',
+            time: reminder.time,
+            status: reminder.status || 'active',
+            notes: reminder.notes || ''
+          });
+        }
+      });
+      
+      setMedicines(uniqueMedicines);
+    } catch (error) {
+      console.error('Error loading medicines:', error);
     }
-  ]);
+  };
   
   const [modalVisible, setModalVisible] = useState(false);
   const [newMedicine, setNewMedicine] = useState({
@@ -53,30 +65,52 @@ const MedicinesScreen = () => {
     notes: ''
   });
 
-  const addMedicine = () => {
+  const addMedicine = async () => {
     if (!newMedicine.name || !newMedicine.dosage) {
       Alert.alert('Error', 'Please fill in at least medicine name and dosage');
       return;
     }
 
-    const medicine = {
-      id: Date.now(),
-      ...newMedicine,
-      status: 'active'
-    };
+    try {
+      const reminder = {
+        medicine: newMedicine.name,
+        dosage: newMedicine.dosage,
+        frequency: newMedicine.frequency || 'daily',
+        time: newMedicine.time || '09:00 AM',
+        notes: newMedicine.notes || '',
+        status: 'active',
+        createdAt: new Date().toISOString()
+      };
 
-    setMedicines([...medicines, medicine]);
-    setNewMedicine({ name: '', dosage: '', frequency: '', time: '', notes: '' });
-    setModalVisible(false);
-    Alert.alert('Success', 'Medicine added successfully!');
+      const savedReminder = await DataService.saveReminder(reminder);
+      await NotificationService.scheduleMedicationReminder(savedReminder);
+      
+      setNewMedicine({ name: '', dosage: '', frequency: '', time: '', notes: '' });
+      setModalVisible(false);
+      await loadMedicines(); // Refresh list
+      Alert.alert('Success', 'Medicine added successfully!');
+    } catch (error) {
+      Alert.alert('Error', 'Failed to add medicine: ' + error.message);
+    }
   };
 
-  const toggleMedicineStatus = (id) => {
-    setMedicines(medicines.map(med => 
-      med.id === id 
-        ? { ...med, status: med.status === 'active' ? 'paused' : 'active' }
-        : med
-    ));
+  const toggleMedicineStatus = async (id) => {
+    try {
+      const medicine = medicines.find(m => m.id === id);
+      const newStatus = medicine.status === 'active' ? 'paused' : 'active';
+      
+      await DataService.updateReminder(id, { status: newStatus });
+      
+      if (newStatus === 'active') {
+        const reminder = await DataService.getReminders();
+        const updated = reminder.find(r => r.id === id);
+        await NotificationService.scheduleMedicationReminder(updated);
+      }
+      
+      await loadMedicines();
+    } catch (error) {
+      Alert.alert('Error', 'Failed to toggle status: ' + error.message);
+    }
   };
 
   const deleteMedicine = (id) => {
@@ -88,7 +122,15 @@ const MedicinesScreen = () => {
         { 
           text: 'Delete', 
           style: 'destructive',
-          onPress: () => setMedicines(medicines.filter(med => med.id !== id))
+          onPress: async () => {
+            try {
+              await DataService.deleteReminder(id);
+              await loadMedicines();
+              Alert.alert('Success', 'Medicine deleted');
+            } catch (error) {
+              Alert.alert('Error', 'Failed to delete: ' + error.message);
+            }
+          }
         }
       ]
     );

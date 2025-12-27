@@ -5,17 +5,48 @@ const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 const cors = require('cors');
+const nodemailer = require('nodemailer');
+const { parseReminderWithAI, generateHealthReport } = require('./ai-parser');
 
 const upload = multer({ dest: path.join(__dirname, 'uploads/') });
 const app = express();
 
-app.use(cors());
-app.use(express.json());
+// Enable CORS for all origins in development
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
+}));
+
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 const HF_API_KEY = process.env.HF_API_KEY;
+const EMAIL_USER = process.env.EMAIL_USER || '';
+const EMAIL_PASS = process.env.EMAIL_PASS || '';
 
 if (!HF_API_KEY) {
-  console.warn('Warning: HF_API_KEY not set. All AI features will be in demo mode.');
+  console.warn('⚠️ Warning: HF_API_KEY not set. AI features will use fallback.');
+}
+
+if (!EMAIL_USER || !EMAIL_PASS) {
+  console.warn('⚠️ Warning: EMAIL_USER or EMAIL_PASS not set. Emails will be logged only (demo mode).');
+}
+
+// Configure nodemailer transporter
+let emailTransporter = null;
+if (EMAIL_USER && EMAIL_PASS) {
+  emailTransporter = nodemailer.createTransport({
+    service: 'gmail', // Change to your email service
+    auth: {
+      user: EMAIL_USER,
+      pass: EMAIL_PASS // Use App Password for Gmail
+    }
+  });
+  console.log('✅ Email service configured');
+} else {
+  console.log('📧 Email service in DEMO mode (will log emails only)');
 }
 
 // Conversation storage (in production, use Redis or database)
@@ -144,30 +175,65 @@ function parseReminderFallback(text) {
   const lowercaseText = text.toLowerCase();
   console.log(`🎯 Fallback parsing: "${text}"`);
   
-  // Medicine extraction
-  const medicines = [
+  // Medicine extraction with smart name detection
+  // CRITICAL: Extract FULL medicine names, not just generic terms
+  
+  // First, try to extract specific medicine names and compounds
+  const specificMedicines = [
     'paracetamol', 'acetaminophen', 'tylenol',
     'aspirin', 'ibuprofen', 'advil', 'motrin',
     'insulin', 'metformin', 'blood pressure',
-    'vitamin d', 'vitamin c', 'calcium',
-    'antibiotics', 'medicine', 'medication',
-    'pill', 'tablet', 'capsule'
+    'vitamin d', 'vitamin c', 'vitamin b', 'vitamin a', 'vitamin e',
+    'calcium', 'iron', 'zinc', 'magnesium',
+    'antibiotics', 'cough syrup', 'eye drops', 
+    'juice', 'water', 'milk', 'tea', 'coffee'
   ];
   
   let medicine = null;
-  for (const med of medicines) {
+  
+  // Check for specific medicines first
+  for (const med of specificMedicines) {
     if (lowercaseText.includes(med)) {
-      medicine = med.charAt(0).toUpperCase() + med.slice(1);
+      // Capitalize properly
+      medicine = med.split(' ').map(word => 
+        word.charAt(0).toUpperCase() + word.slice(1)
+      ).join(' ');
       break;
     }
   }
   
-  // Time extraction
+  // If no specific medicine found, try to extract from context
+  // Look for patterns like "take [something] at" or "remind me to take [something]"
+  if (!medicine) {
+    const takePatterns = [
+      /take\s+(?:the\s+)?([a-z\s]+?)(?:\s+at|\s+tablet|\s+pill|\s+capsule|\s+mg|\s+ml)/i,
+      /remind me to take\s+([a-z\s]+?)(?:\s+at|\s+tablet|\s+pill|\s+capsule|\s+mg|\s+ml)/i,
+      /\b([a-z]+(?:\s+[a-z]+)?)\s+(?:tablet|pill|capsule|syrup|drops)/i
+    ];
+    
+    for (const pattern of takePatterns) {
+      const match = text.match(pattern);
+      if (match && match[1] && match[1].trim()) {
+        const extracted = match[1].trim();
+        // Only use if it's not a generic term
+        const genericTerms = ['medicine', 'medication', 'pill', 'tablet', 'capsule', 'my', 'the', 'this', 'that'];
+        if (!genericTerms.includes(extracted.toLowerCase())) {
+          medicine = extracted.split(' ').map(word => 
+            word.charAt(0).toUpperCase() + word.slice(1)
+          ).join(' ');
+          break;
+        }
+      }
+    }
+  }
+  
+  // Time extraction with 24-hour format support
   let time = null;
   const timePatterns = [
-    /(\d{1,2}):(\d{2})\s*(am|pm)/i,
-    /(\d{1,2})\s*(am|pm)/i,
-    /(\d{1,2})\s*o'?clock/i,
+    /(\d{1,2}):(\d{2})\s*(am|pm)/i,  // 2:30 PM
+    /(\d{1,2})\s*(am|pm)/i,           // 2 PM
+    /(\d{1,2})\s*o'?clock/i,          // 2 o'clock
+    /(\d{1,2}):(\d{2})/,              // 14:00 (24-hour)
     /(morning|evening|night|afternoon)/i
   ];
   
@@ -175,16 +241,30 @@ function parseReminderFallback(text) {
     const match = text.match(pattern);
     if (match) {
       if (match[3]) { // Has AM/PM
-        time = `${match[1]}:${match[2] || '00'} ${match[3].toUpperCase()}`;
-      } else if (match[2] && match[2].toLowerCase() === 'am' || match[2].toLowerCase() === 'pm') {
+        const hour = parseInt(match[1]);
+        const min = match[2] || '00';
+        time = `${hour}:${min} ${match[3].toUpperCase()}`;
+      } else if (match[2] && (match[2].toLowerCase() === 'am' || match[2].toLowerCase() === 'pm')) {
         time = `${match[1]}:00 ${match[2].toUpperCase()}`;
+      } else if (pattern.toString().includes('(\\d{1,2}):(\\d{2})') && match[1] && match[2]) {
+        // 24-hour format detected (e.g., 14:00)
+        let hour = parseInt(match[1]);
+        const min = match[2];
+        const period = hour >= 12 ? 'PM' : 'AM';
+        if (hour > 12) hour = hour - 12;
+        if (hour === 0) hour = 12;
+        time = `${hour}:${min} ${period}`;
+        console.log(`⏰ Converted 24-hour time ${match[1]}:${match[2]} to 12-hour: ${time}`);
       } else if (match[1]) {
         const timeOfDay = match[1].toLowerCase();
         if (timeOfDay === 'morning') time = '8:00 AM';
         else if (timeOfDay === 'afternoon') time = '2:00 PM';
         else if (timeOfDay === 'evening') time = '6:00 PM';
         else if (timeOfDay === 'night') time = '10:00 PM';
-        else time = `${match[1]}:00 ${parseInt(match[1]) < 12 ? 'AM' : 'PM'}`;
+        else {
+          const hourNum = parseInt(match[1]);
+          time = `${hourNum}:00 ${hourNum < 12 ? 'AM' : 'PM'}`;
+        }
       }
       break;
     }
@@ -207,43 +287,62 @@ function parseReminderFallback(text) {
     }
   }
   
-  // Frequency extraction
+  // Frequency extraction - check for one-time events FIRST
   let frequency = null;
-  const frequencyPatterns = [
-    /daily|every day|once a day/i,
-    /twice a day|two times a day|bid/i,
-    /three times a day|thrice a day|tid/i,
-    /four times a day|qid/i,
-    /weekly|once a week/i,
-    /monthly|once a month/i,
-    /every (\d+) hours?/i,
-    /(\d+) times? a day/i
-  ];
   
-  for (const pattern of frequencyPatterns) {
-    const match = text.match(pattern);
-    if (match) {
-      const matchedText = match[0].toLowerCase();
-      if (matchedText.includes('daily') || matchedText.includes('once a day') || matchedText.includes('every day')) {
-        frequency = 'daily';
-      } else if (matchedText.includes('twice') || matchedText.includes('two times')) {
-        frequency = 'twice daily';
-      } else if (matchedText.includes('three') || matchedText.includes('thrice')) {
-        frequency = 'three times daily';
-      } else if (matchedText.includes('four')) {
-        frequency = 'four times daily';
-      } else if (matchedText.includes('weekly')) {
-        frequency = 'weekly';
-      } else if (matchedText.includes('monthly')) {
-        frequency = 'monthly';
-      } else if (match[1]) {
-        if (matchedText.includes('hours')) {
-          frequency = `every ${match[1]} hours`;
-        } else if (matchedText.includes('times')) {
-          frequency = `${match[1]} times daily`;
+  // Check for temporal words indicating one-time event
+  if (/tomorrow|today|tonight|this evening|this morning/i.test(text)) {
+    frequency = 'once';
+  } else if (/once|one time|single dose/i.test(text)) {
+    frequency = 'once';
+  } else {
+    // Check recurring patterns
+    const frequencyPatterns = [
+      /daily|every day/i,
+      /twice a day|two times a day|bid/i,
+      /three times a day|thrice a day|tid/i,
+      /four times a day|qid/i,
+      /weekly|once a week/i,
+      /monthly|once a month/i,
+      /every (\d+) hours?/i,
+      /(\d+) times? a day/i
+    ];
+    
+    for (const pattern of frequencyPatterns) {
+      const match = text.match(pattern);
+      if (match) {
+        const matchedText = match[0].toLowerCase();
+        if (matchedText.includes('daily') || matchedText.includes('every day')) {
+          frequency = 'daily';
+        } else if (matchedText.includes('twice') || matchedText.includes('two times')) {
+          frequency = 'twice daily';
+        } else if (matchedText.includes('three') || matchedText.includes('thrice')) {
+          frequency = 'three times daily';
+        } else if (matchedText.includes('four')) {
+          frequency = 'four times daily';
+        } else if (matchedText.includes('weekly')) {
+          frequency = 'weekly';
+        } else if (matchedText.includes('monthly')) {
+          frequency = 'monthly';
+        } else if (match[1]) {
+          if (matchedText.includes('hours')) {
+            frequency = `every ${match[1]} hours`;
+          } else if (matchedText.includes('times')) {
+            frequency = `${match[1]} times daily`;
+          }
         }
+        break;
       }
-      break;
+    }
+  }
+  
+  // If no frequency found and no temporal words, check context
+  if (!frequency) {
+    // Only default to 'daily' if there are no one-time indicators
+    if (!/tomorrow|today|tonight|once|one time/i.test(text)) {
+      frequency = null; // Let the system ask for frequency
+    } else {
+      frequency = 'once';
     }
   }
   
@@ -267,6 +366,16 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Simple ping endpoint for connectivity testing
+app.get('/ping', (req, res) => {
+  console.log('🏓 Ping received from:', req.ip);
+  res.json({ 
+    pong: true,
+    serverTime: new Date().toISOString(),
+    clientIP: req.ip
+  });
+});
+
 // Enhanced transcription endpoint with language support
 app.post('/transcribe-enhanced', upload.single('audio'), async (req, res) => {
   console.log('📝 Enhanced transcription request received');
@@ -279,87 +388,163 @@ app.post('/transcribe-enhanced', upload.single('audio'), async (req, res) => {
   }
 
   const audioFilePath = req.file.path;
-  const targetLanguage = req.body.language || 'auto';
+  const targetLanguage = req.body.language || 'en';
   
   console.log(`🔊 Processing audio file: ${path.basename(audioFilePath)}`);
   console.log(`🌐 Target language: ${targetLanguage}`);
 
-  // Demo mode fallback
-  if (!HF_API_KEY) {
-    console.log('🎭 Demo mode: Returning mock transcription');
-    fs.unlinkSync(audioFilePath);
-    
-    const mockResponses = {
-      en: 'Remind me to take Paracetamol 500mg at 10 PM daily',
-      te: 'రోజూ రాత్రి 10 గంటలకు పారాసిటమాల్ 500mg తీసుకోవాలని గుర్తు చేయండి'
-    };
-    
-    return res.json({ 
-      transcription: mockResponses[targetLanguage] || mockResponses.en,
-      detectedLanguage: targetLanguage === 'auto' ? 'en' : targetLanguage,
-      confidence: 0.95,
-      processingTime: 1200,
-      demo: true
-    });
-  }
-
   const startTime = Date.now();
 
   try {
+    // Read audio file
     const audioData = fs.readFileSync(audioFilePath);
     console.log(`📊 Audio file size: ${(audioData.length / 1024).toFixed(2)} KB`);
 
-    const whisperResponse = await axios.post(
-      'https://api-inference.huggingface.co/models/openai/whisper-large-v3',
-      audioData,
-      {
-        headers: {
-          'Authorization': `Bearer ${HF_API_KEY}`,
-          'Content-Type': 'audio/x-m4a',
-        },
-        timeout: 90000,
-      }
-    );
+    // Try AssemblyAI first (more reliable)
+    if (process.env.ASSEMBLYAI_API_KEY && process.env.ASSEMBLYAI_API_KEY !== 'your_assemblyai_key_here') {
+      console.log('� Using AssemblyAI for transcription...');
+      
+      try {
+        // Upload to AssemblyAI
+        const uploadResponse = await axios.post(
+          'https://api.assemblyai.com/v2/upload',
+          audioData,
+          {
+            headers: {
+              'authorization': process.env.ASSEMBLYAI_API_KEY,
+              'content-type': 'application/octet-stream',
+            },
+          }
+        );
 
-    const transcription = whisperResponse.data.text?.trim();
-    
-    if (!transcription) {
-      throw new Error('Empty transcription received from Whisper');
+        const audioUrl = uploadResponse.data.upload_url;
+        console.log('✅ Audio uploaded to AssemblyAI');
+
+        // Request transcription
+        const transcriptResponse = await axios.post(
+          'https://api.assemblyai.com/v2/transcript',
+          {
+            audio_url: audioUrl,
+            language_code: targetLanguage === 'en' ? 'en' : 'en_us',
+          },
+          {
+            headers: {
+              'authorization': process.env.ASSEMBLYAI_API_KEY,
+              'content-type': 'application/json',
+            },
+          }
+        );
+
+        const transcriptId = transcriptResponse.data.id;
+        console.log('⏳ Waiting for transcription...');
+
+        // Poll for completion
+        let transcript;
+        while (true) {
+          const pollingResponse = await axios.get(
+            `https://api.assemblyai.com/v2/transcript/${transcriptId}`,
+            {
+              headers: {
+                'authorization': process.env.ASSEMBLYAI_API_KEY,
+              },
+            }
+          );
+
+          transcript = pollingResponse.data;
+
+          if (transcript.status === 'completed') {
+            break;
+          } else if (transcript.status === 'error') {
+            throw new Error('Transcription failed: ' + transcript.error);
+          }
+
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+
+        const transcribedText = transcript.text;
+        const processingTime = Date.now() - startTime;
+
+        // Clean up
+        fs.unlinkSync(audioFilePath);
+
+        console.log(`✅ Transcription successful (${processingTime}ms): "${transcribedText}"`);
+
+        return res.json({
+          transcription: transcribedText,
+          detectedLanguage: targetLanguage,
+          confidence: transcript.confidence || 0.95,
+          processingTime,
+          service: 'assemblyai'
+        });
+
+      } catch (assemblyError) {
+        console.error('❌ AssemblyAI failed:', assemblyError.message);
+        // Fall through to Hugging Face
+      }
     }
 
-    const detectedLanguage = targetLanguage === 'auto' ? detectLanguage(transcription) : targetLanguage;
-    const processingTime = Date.now() - startTime;
+    // Fallback to Hugging Face Whisper
+    if (HF_API_KEY && HF_API_KEY !== 'your_hf_key_here') {
+      console.log('🎯 Using Hugging Face Whisper...');
+      
+      const whisperResponse = await axios.post(
+        'https://router.huggingface.co/hf-inference/models/openai/whisper-small',
+        audioData,
+        {
+          headers: {
+            'Authorization': `Bearer ${HF_API_KEY}`,
+            'Content-Type': 'application/octet-stream',
+          },
+          timeout: 60000,
+        }
+      );
 
-    console.log(`✅ Transcription successful: "${transcription}"`);
-    console.log(`🌐 Detected language: ${detectedLanguage}`);
-    console.log(`⏱️ Processing time: ${processingTime}ms`);
+      const transcription = whisperResponse.data.text?.trim();
+      
+      if (!transcription) {
+        throw new Error('Empty transcription received');
+      }
 
-    res.json({ 
-      transcription,
-      detectedLanguage,
-      confidence: 0.9,
-      processingTime,
-      demo: false
+      const processingTime = Date.now() - startTime;
+      fs.unlinkSync(audioFilePath);
+
+      console.log(`✅ Transcription successful (${processingTime}ms): "${transcription}"`);
+
+      return res.json({
+        transcription,
+        detectedLanguage: targetLanguage,
+        confidence: 0.9,
+        processingTime,
+        service: 'huggingface'
+      });
+    }
+
+    // No API keys - return demo mode
+    console.log('⚠️ No API keys configured, using demo mode');
+    fs.unlinkSync(audioFilePath);
+    
+    return res.json({ 
+      transcription: 'Remind me to take Aspirin 500mg at 9 AM daily',
+      detectedLanguage: 'en',
+      confidence: 1.0,
+      processingTime: 100,
+      demo: true,
+      message: 'Add ASSEMBLYAI_API_KEY to .env for real transcription'
     });
 
   } catch (error) {
-    const processingTime = Date.now() - startTime;
-    const errorMessage = error.response?.data ? JSON.stringify(error.response.data) : error.message;
+    console.error('❌ Transcription error:', error);
     
-    console.error('❌ Enhanced transcription error:', errorMessage);
-    console.error(`⏱️ Failed after: ${processingTime}ms`);
-    
-    res.status(500).json({ 
-      error: 'Transcription failed', 
-      message: errorMessage,
-      code: 'TRANSCRIPTION_ERROR',
-      processingTime
-    });
-  } finally {
-    if (fs.existsSync(audioFilePath)) {
+    // Clean up file
+    try {
       fs.unlinkSync(audioFilePath);
-      console.log('🗑️ Temporary audio file cleaned up');
-    }
+    } catch (e) {}
+
+    return res.status(500).json({
+      error: 'Transcription failed',
+      message: error.message,
+      code: 'TRANSCRIPTION_ERROR'
+    });
   }
 });
 
@@ -379,112 +564,36 @@ app.post('/parse-reminder-enhanced', async (req, res) => {
     });
   }
 
-  // Enhanced demo/fallback mode
-  const shouldUseFallback = !HF_API_KEY;
-  
-  if (shouldUseFallback) {
-    console.log('🎭 Using enhanced fallback parsing...');
-    
-    const demoResult = parseReminderFallback(text);
-    const analysisResult = analyzeReminderCompleteness(demoResult);
-    console.log('🎭 Fallback analysis result:', analysisResult);
-    
-    return res.json({
-      ...analysisResult,
-      demo: true,
-      processingTime: 800
-    });
-  }
-
   const startTime = Date.now();
-  const prompt = createEnhancedPrompt(text, language, context);
 
-  try {
-    console.log('🚀 Sending request to Mistral AI...');
-    
-    const response = await axios.post(
-      'https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2',
-      {
-        inputs: prompt,
-        parameters: { 
-          max_new_tokens: 200, 
-          temperature: 0.1,
-          do_sample: false,
-          return_full_text: false
-        }
-      },
-      {
-        headers: {
-          'Authorization': `Bearer ${HF_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        timeout: 30000,
-      }
-    );
-
-    const generatedText = response.data[0]?.generated_text?.replace(prompt, '').trim();
-    console.log('🤖 Raw AI response:', generatedText);
-
-    if (!generatedText) {
-      throw new Error('Empty response from AI model');
-    }
-
-    // Extract JSON from response
-    const jsonMatch = generatedText.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      throw new Error('No valid JSON found in AI response');
-    }
-
-    let parsedResult;
+  // Try AI parsing first
+  if (HF_API_KEY) {
     try {
-      parsedResult = JSON.parse(jsonMatch[0]);
-    } catch (parseError) {
-      console.error('❌ JSON parsing error:', parseError.message);
-      throw new Error('Invalid JSON format from AI model');
-    }
-
-    const analysisResult = analyzeReminderCompleteness(parsedResult);
-    const processingTime = Date.now() - startTime;
-
-    // Store conversation context if needed
-    if (conversationId && analysisResult.conversationContext) {
-      activeConversations.set(conversationId, {
-        ...analysisResult.conversationContext,
-        lastUpdated: new Date(),
-        language
+      console.log('🤖 Using AI parser...');
+      const aiResult = await parseReminderWithAI(text);
+      const processingTime = Date.now() - startTime;
+      
+      return res.json({
+        ...aiResult,
+        aiPowered: true,
+        processingTime
       });
+    } catch (aiError) {
+      console.warn('⚠️ AI parsing failed, falling back to regex:', aiError.message);
     }
-
-    console.log('✅ Enhanced parsing successful:', analysisResult);
-    console.log(`⏱️ Processing time: ${processingTime}ms`);
-
-    res.json({
-      ...analysisResult,
-      demo: false,
-      processingTime
-    });
-
-  } catch (error) {
-    const processingTime = Date.now() - startTime;
-    const errorMessage = error.response?.data ? JSON.stringify(error.response.data) : error.message;
-    
-    console.error('❌ AI parsing failed:', errorMessage);
-    console.log('🎯 Falling back to enhanced parsing...');
-    
-    // Fall back to enhanced rule-based parsing
-    const fallbackResult = parseReminderFallback(text);
-    const analysisResult = analyzeReminderCompleteness(fallbackResult);
-    
-    console.log('✅ Fallback parsing successful:', analysisResult);
-    
-    res.json({
-      ...analysisResult,
-      demo: true,
-      processingTime,
-      fallback: true,
-      originalError: 'AI model unavailable'
-    });
   }
+  
+  // Fallback to regex parsing
+  console.log('🎭 Using fallback parsing...');
+  const demoResult = parseReminderFallback(text);
+  const fallbackAnalysis = analyzeReminderCompleteness(demoResult);
+  console.log('🎭 Fallback analysis result:', fallbackAnalysis);
+  
+  return res.json({
+    ...fallbackAnalysis,
+    demo: !HF_API_KEY,
+    processingTime: Date.now() - startTime
+  });
 });
 
 // Generate follow-up questions endpoint
@@ -633,7 +742,7 @@ Response in ${language}:`;
     const startTime = Date.now();
 
     const response = await axios.post(
-      'https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2',
+      'https://router.huggingface.co/hf-inference/models/mistralai/Mistral-7B-Instruct-v0.2',
       {
         inputs: prompt,
         parameters: { max_new_tokens: 200, temperature: 0.7 }
@@ -690,6 +799,413 @@ Response in ${language}:`;
       fallback: true,
       adherenceRate,
       originalError: 'AI model unavailable'
+    });
+  }
+});
+
+// AI Health Report endpoint
+app.post('/generate-ai-report', async (req, res) => {
+  const { medicationHistory, feedbackHistory } = req.body;
+
+  console.log('📊 AI Report generation request');
+  console.log(`📝 Medications: ${medicationHistory?.length || 0} entries`);
+  console.log(`📝 Feedback: ${feedbackHistory?.length || 0} entries`);
+
+  if (!medicationHistory || medicationHistory.length === 0) {
+    return res.status(400).json({ 
+      error: 'No medication history provided',
+      code: 'MISSING_DATA' 
+    });
+  }
+
+  const startTime = Date.now();
+
+  // Try AI report generation
+  if (HF_API_KEY) {
+    try {
+      console.log('🤖 Generating AI-powered health report...');
+      const aiReport = await generateHealthReport(medicationHistory, feedbackHistory || []);
+      const processingTime = Date.now() - startTime;
+      
+      return res.json({
+        ...aiReport,
+        aiPowered: true,
+        processingTime
+      });
+    } catch (aiError) {
+      console.warn('⚠️ AI report generation failed, using fallback:', aiError.message);
+    }
+  }
+
+  // Fallback report
+  console.log('🎭 Using fallback report generation...');
+  const adherenceRate = calculateAdherenceRate(medicationHistory);
+  const insights = generateBasicInsights(medicationHistory, feedbackHistory || []);
+  
+  console.log(`📝 Generated report length: ${insights.length} characters`);
+  console.log(`📊 Adherence rate: ${adherenceRate}%`);
+  
+  const report = insights; // insights already has the full report with title
+  
+  return res.json({
+    report,
+    generatedAt: new Date().toISOString(),
+    medicationCount: medicationHistory.length,
+    adherenceRate,
+    demo: !HF_API_KEY,
+    processingTime: Date.now() - startTime
+  });
+});
+
+function calculateAdherenceRate(history) {
+  const taken = history.filter(h => h.status === 'taken').length;
+  return history.length > 0 ? Math.round((taken / history.length) * 100) : 0;
+}
+
+function generateBasicInsights(history, feedbackHistory = []) {
+  const totalTaken = history.filter(h => h.status === 'taken').length;
+  const totalMissed = history.filter(h => h.status === 'missed').length;
+  const totalMeds = history.length;
+  const adherenceRate = totalMeds > 0 ? Math.round((totalTaken / totalMeds) * 100) : 0;
+  
+  // Group by medicine
+  const medicineGroups = {};
+  history.forEach(med => {
+    const name = med.medicine || 'Unknown';
+    if (!medicineGroups[name]) {
+      medicineGroups[name] = { taken: 0, missed: 0, dosage: med.dosage, frequency: med.frequency };
+    }
+    if (med.status === 'taken') medicineGroups[name].taken++;
+    if (med.status === 'missed') medicineGroups[name].missed++;
+  });
+
+  const getAdherenceEmoji = (rate) => {
+    if (rate >= 90) return '🌟';
+    if (rate >= 70) return '👍';
+    if (rate >= 50) return '⚠️';
+    return '🚨';
+  };
+
+  // Generate comprehensive report
+  let report = `# 📊 Health & Medication Report\n\n`;
+  report += `**Generated:** ${new Date().toLocaleDateString()} at ${new Date().toLocaleTimeString()}\n\n`;
+  
+  // Overview
+  report += `## 💊 Medication Overview\n\n`;
+  report += `- **Overall Adherence:** ${adherenceRate}% ${getAdherenceEmoji(adherenceRate)}\n`;
+  report += `- **Doses Taken:** ${totalTaken} ✅\n`;
+  report += `- **Doses Missed:** ${totalMissed} ❌\n`;
+  report += `- **Total Scheduled:** ${totalMeds}\n`;
+  report += `- **Feedback Entries:** ${feedbackHistory.length} 💬\n\n`;
+  
+  // Individual medicines
+  report += `## 📋 Your Medications\n\n`;
+  Object.entries(medicineGroups).forEach(([name, data]) => {
+    const medTotal = data.taken + data.missed;
+    const medAdherence = medTotal > 0 ? Math.round((data.taken / medTotal) * 100) : 0;
+    report += `### ${name}\n`;
+    report += `- **Dosage:** ${data.dosage || 'As prescribed'}\n`;
+    report += `- **Frequency:** ${data.frequency || 'Daily'}\n`;
+    report += `- **Adherence:** ${medAdherence}% (${data.taken} taken, ${data.missed} missed)\n\n`;
+  });
+  
+  // Feedback section (if available)
+  if (feedbackHistory.length > 0) {
+    report += `## 💬 Recent Feedback\n\n`;
+    const recentFeedback = feedbackHistory.slice(-5); // Last 5 feedback entries
+    recentFeedback.forEach(f => {
+      const medName = history.find(h => h.medicationId === f.medicationId)?.medicine || 'Unknown';
+      const timestamp = new Date(f.timestamp).toLocaleString();
+      report += `- **${medName}** (${timestamp}): "${f.feedback}" ${f.sentiment ? `[${f.sentiment}]` : ''}\n`;
+    });
+    report += `\n`;
+  }
+  
+  // Insights
+  report += `## 📈 Health Insights\n\n`;
+  if (adherenceRate >= 90) {
+    report += `🌟 **Excellent!** You're doing a great job staying on track with your medications!\n\n`;
+  } else if (adherenceRate >= 70) {
+    report += `👍 **Good progress!** You're mostly consistent. Try to improve further.\n\n`;
+  } else if (adherenceRate >= 50) {
+    report += `⚠️ **Needs Attention:** You're missing quite a few doses. Let's work on improving adherence.\n\n`;
+  } else {
+    report += `🚨 **Critical:** You're missing most doses. Please consult your doctor immediately.\n\n`;
+  }
+  
+  // Diet recommendations
+  report += `## 🥗 Dietary Recommendations\n\n`;
+  report += `### Foods to Include:\n`;
+  report += `- **Leafy Greens:** Spinach, kale for vitamins and minerals\n`;
+  report += `- **Fruits:** Berries, citrus for antioxidants\n`;
+  report += `- **Whole Grains:** Brown rice, oats for sustained energy\n`;
+  report += `- **Lean Proteins:** Fish, chicken, legumes\n`;
+  report += `- **Healthy Fats:** Nuts, seeds, olive oil\n\n`;
+  
+  report += `### Foods to Avoid:\n`;
+  report += `- **Grapefruit:** Can interfere with many medications\n`;
+  report += `- **Alcohol:** May interact with medications\n`;
+  report += `- **High Sodium:** Limit processed foods\n`;
+  report += `- **Excessive Caffeine:** Can affect medication absorption\n\n`;
+  
+  report += `### Meal Timing:\n`;
+  report += `- Take medications with food unless specified otherwise\n`;
+  report += `- Maintain regular meal times\n`;
+  report += `- Stay hydrated (8 glasses of water daily)\n\n`;
+  
+  // Exercise
+  report += `## 🏃 Exercise Suggestions\n\n`;
+  report += `### Recommended Activities:\n`;
+  report += `- **Walking:** 30 minutes daily, low impact\n`;
+  report += `- **Swimming:** Gentle on joints, full body workout\n`;
+  report += `- **Yoga:** Flexibility and stress reduction\n`;
+  report += `- **Light Cycling:** Cardiovascular health\n\n`;
+  
+  report += `### Exercise Guidelines:\n`;
+  report += `- **Duration:** 20-30 minutes per session\n`;
+  report += `- **Frequency:** 4-5 days per week\n`;
+  report += `- **Intensity:** Moderate (can talk while exercising)\n`;
+  report += `- **Best Time:** Morning or 2 hours after meals\n\n`;
+  
+  report += `### Precautions:\n`;
+  report += `- ⚠️ Consult your doctor before starting new exercise\n`;
+  report += `- ⚠️ Avoid exercise if feeling dizzy or unwell\n`;
+  report += `- ⚠️ Stay hydrated before, during, and after exercise\n`;
+  report += `- ⚠️ Stop if you experience chest pain or breathing difficulty\n\n`;
+  
+  // Reminders
+  report += `## ⚠️ Important Reminders\n\n`;
+  report += `- Never skip medication doses without consulting your doctor\n`;
+  report += `- Set up multiple reminders to improve adherence\n`;
+  report += `- Keep track of side effects and report to your doctor\n`;
+  report += `- Store medications in a cool, dry place\n`;
+  report += `- Check expiration dates regularly\n\n`;
+  
+  // Action items
+  report += `## ✅ Action Items for Better Health\n\n`;
+  report += `1. **Improve Adherence:** Set phone alarms for medication times\n`;
+  report += `2. **Stay Active:** Start with 15-minute walks daily\n`;
+  report += `3. **Eat Better:** Add one extra serving of vegetables daily\n\n`;
+  
+  report += `---\n`;
+  report += `\n*📝 Note: This is a comprehensive health report. For AI-powered personalized insights, ensure your server is configured with a valid Hugging Face API key.*\n`;
+
+  return report;
+}
+
+// ============================================================================
+// EMAIL NOTIFICATION ENDPOINTS (Caregiver Alerts)
+// ============================================================================
+
+/**
+ * Send email alert when medication is missed
+ * Uses a simple email API (for demo purposes)
+ */
+app.post('/send-caregiver-alert', async (req, res) => {
+  const startTime = Date.now();
+  
+  try {
+    const {
+      to,
+      caregiverName,
+      patientName,
+      medicineName,
+      dosage,
+      scheduledTime,
+      missedDate
+    } = req.body;
+
+    console.log('📧 Caregiver alert request for:', to);
+
+    const alertData = {
+      to,
+      subject: `⚠️ Medication Missed - ${patientName}`,
+      html: `
+<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 2px solid #dc3545; border-radius: 10px;">
+  <h2 style="color: #dc3545;">⚠️ Medication Alert</h2>
+  
+  <p>Dear <strong>${caregiverName}</strong>,</p>
+  
+  <p>This is an automated alert from the Voice-Based Medicine Reminder system.</p>
+  
+  <div style="background-color: #f8d7da; padding: 15px; border-radius: 5px; margin: 20px 0;">
+    <p><strong>Patient:</strong> ${patientName}</p>
+    <p><strong>Missed Medication:</strong> ${medicineName}</p>
+    <p><strong>Dosage:</strong> ${dosage || 'As prescribed'}</p>
+    <p><strong>Scheduled Time:</strong> ${scheduledTime}</p>
+    <p><strong>Date:</strong> ${missedDate}</p>
+  </div>
+  
+  <p>Please check on ${patientName} to ensure they take their medication as soon as possible.</p>
+  
+  <hr style="margin: 20px 0; border: none; border-top: 1px solid #dee2e6;">
+  <p style="font-size: 12px; color: #6c757d;">Voice-Based Medicine Reminder System<br>Automated Alert - Do Not Reply</p>
+</div>
+      `.trim(),
+      text: `
+Dear ${caregiverName},
+
+This is an automated alert from the Voice-Based Medicine Reminder system.
+
+Patient: ${patientName}
+Missed Medication: ${medicineName}
+Dosage: ${dosage || 'As prescribed'}
+Scheduled Time: ${scheduledTime}
+Date: ${missedDate}
+
+Please check on ${patientName} to ensure they take their medication as soon as possible.
+
+---
+Voice-Based Medicine Reminder System
+Automated Alert - Do Not Reply
+      `.trim()
+    };
+
+    // Try to send email if configured
+    if (emailTransporter) {
+      try {
+        console.log('📧 Sending email to:', to);
+        
+        const info = await emailTransporter.sendMail({
+          from: `"Medicine Reminder" <${EMAIL_USER}>`,
+          to: to,
+          subject: alertData.subject,
+          text: alertData.text,
+          html: alertData.html
+        });
+
+        console.log('✅ Email sent successfully:', info.messageId);
+        
+        res.json({
+          success: true,
+          message: 'Caregiver alert sent successfully',
+          emailId: info.messageId,
+          processingTime: Date.now() - startTime
+        });
+      } catch (emailError) {
+        console.error('❌ Email sending failed:', emailError);
+        res.status(500).json({
+          success: false,
+          error: 'Failed to send email',
+          details: emailError.message
+        });
+      }
+    } else {
+      // Demo mode - log only
+      console.log('📋 Email content (DEMO MODE):');
+      console.log('To:', to);
+      console.log('Subject:', alertData.subject);
+      console.log('Message:', alertData.text);
+      
+      res.json({
+        success: true,
+        message: 'Alert logged (demo mode - email not sent)',
+        alert: alertData,
+        demo: true,
+        note: 'Configure EMAIL_USER and EMAIL_PASS in .env to enable real email sending',
+        processingTime: Date.now() - startTime
+      });
+    }
+
+  } catch (error) {
+    console.error('❌ Caregiver alert error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * Send daily missed medications report
+ */
+app.post('/send-daily-report', async (req, res) => {
+  const startTime = Date.now();
+  
+  try {
+    const {
+      to,
+      caregiverName,
+      patientName,
+      missedMedications,
+      reportDate
+    } = req.body;
+
+    console.log('📧 Daily report request for:', to);
+
+    const medicationsList = missedMedications
+      .map((med, idx) => `${idx + 1}. ${med.medicine} (${med.dosage || 'As prescribed'}) at ${med.time}`)
+      .join('\n');
+
+    const reportData = {
+      to,
+      subject: `📊 Daily Medication Report - ${patientName}`,
+      message: `
+Dear ${caregiverName},
+
+Here is the daily medication report for ${patientName}.
+
+**Report Date**: ${reportDate}
+**Total Missed Medications**: ${missedMedications.length}
+
+**Missed Medications**:
+${medicationsList}
+
+Please follow up with ${patientName} regarding these missed doses.
+
+---
+Voice-Based Medicine Reminder System
+Daily Report - Do Not Reply
+      `.trim()
+    };
+
+    console.log('✉️ Daily report prepared:', reportData);
+    
+    res.json({
+      success: true,
+      message: 'Daily report prepared (demo mode)',
+      report: reportData,
+      demo: true,
+      processingTime: Date.now() - startTime
+    });
+
+  } catch (error) {
+    console.error('❌ Daily report error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * Test email configuration
+ */
+app.post('/test-email', async (req, res) => {
+  try {
+    const { to } = req.body;
+
+    console.log('📧 Email test request for:', to);
+
+    const testData = {
+      to,
+      subject: '✅ Email Test - Voice Medicine Reminder',
+      message: 'This is a test email from the Voice-Based Medicine Reminder system. Email notifications are working correctly!'
+    };
+
+    res.json({
+      success: true,
+      message: 'Email test successful (demo mode)',
+      test: testData,
+      demo: true,
+      note: 'Integrate with real email service for production use'
+    });
+
+  } catch (error) {
+    console.error('❌ Email test error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
     });
   }
 });

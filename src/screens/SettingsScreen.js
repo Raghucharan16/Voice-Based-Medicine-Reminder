@@ -17,6 +17,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import TTSService from '../services/TTSService';
 import DataService from '../services/DataService';
 import NotificationService from '../services/NotificationService';
+import { testMedicationMonitor } from '../services/TestMonitor';
 
 const SettingsScreen = () => {
   const [notifications, setNotifications] = useState(true);
@@ -24,6 +25,7 @@ const SettingsScreen = () => {
   const [dailyReports, setDailyReports] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [vibrationEnabled, setVibrationEnabled] = useState(true);
+  const [caregiverAlerts, setCaregiverAlerts] = useState(true); // NEW: Caregiver email alerts
   const [showNameModal, setShowNameModal] = useState(false);
   const [userName, setUserName] = useState('User');
   const [tempUserName, setTempUserName] = useState('');
@@ -60,6 +62,18 @@ const SettingsScreen = () => {
           value: vibrationEnabled,
           onToggle: setVibrationEnabled,
           icon: 'phone-portrait',
+        },
+      ],
+    },
+    {
+      category: 'Caregiver Alerts',
+      items: [
+        {
+          title: 'Email Alerts',
+          subtitle: 'Notify caregivers when medicine is missed',
+          value: caregiverAlerts,
+          onToggle: setCaregiverAlerts,
+          icon: 'mail',
         },
       ],
     },
@@ -148,16 +162,33 @@ const SettingsScreen = () => {
 
   const handleAddCaretaker = async () => {
     try {
+      // Validation
       if (!newCaretaker.name || !newCaretaker.email) {
         Alert.alert('Error', 'Name and email are required');
         return;
+      }
+
+      // Email validation
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(newCaretaker.email)) {
+        Alert.alert('Invalid Email', 'Please enter a valid email address');
+        return;
+      }
+
+      // Phone validation (10 digits)
+      if (newCaretaker.phone) {
+        const phoneRegex = /^\d{10}$/;
+        if (!phoneRegex.test(newCaretaker.phone.replace(/[\s-]/g, ''))) {
+          Alert.alert('Invalid Phone', 'Phone number must be exactly 10 digits');
+          return;
+        }
       }
 
       const savedCaretaker = await DataService.saveCaretaker(newCaretaker);
       setCaretakers(prev => [...prev, savedCaretaker]);
       setNewCaretaker({ name: '', email: '', phone: '', relationship: '' });
       setShowCaretakerModal(false);
-      Alert.alert('Success', 'Caretaker added successfully!');
+      Alert.alert('Success', `Caregiver ${newCaretaker.name} added successfully!\n\nThey will receive email alerts when medications are missed.`);
     } catch (error) {
       Alert.alert('Error', 'Failed to add caretaker: ' + error.message);
     }
@@ -189,7 +220,24 @@ const SettingsScreen = () => {
   // Load caretakers on component mount
   React.useEffect(() => {
     loadCaretakers();
+    initializeCaregiverAlerts();
   }, []);
+
+  const initializeCaregiverAlerts = async () => {
+    try {
+      const setting = await AsyncStorage.getItem('caregiverAlerts');
+      if (setting === null) {
+        // Set default to TRUE (ENABLED) if not set
+        await AsyncStorage.setItem('caregiverAlerts', 'true');
+        setCaregiverAlerts(true);
+        console.log('✅ Initialized caregiver alerts to ENABLED by default');
+      } else {
+        setCaregiverAlerts(setting === 'true');
+      }
+    } catch (error) {
+      console.error('Error initializing caregiver alerts:', error);
+    }
+  };
 
   const handleAbout = () => {
     Alert.alert(
@@ -357,6 +405,17 @@ const SettingsScreen = () => {
           <Text style={styles.sectionTitle}>⚡ Quick Actions</Text>
           <View style={styles.actionsCard}>
             <ActionButton
+              title="Test Monitor System"
+              subtitle="Check missed medication detection"
+              icon="pulse"
+              color="#FF5722"
+              onPress={async () => {
+                console.log('\n🧪 Starting manual monitor test...\n');
+                await testMedicationMonitor();
+                Alert.alert('Test Complete', 'Check console logs for detailed results!');
+              }}
+            />
+            <ActionButton
               title="Test Notifications"
               subtitle="Check if reminders are working"
               icon="notifications"
@@ -384,13 +443,6 @@ const SettingsScreen = () => {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>💾 Data Management</Text>
           <View style={styles.actionsCard}>
-            <ActionButton
-              title="Export Data"
-              subtitle="Share data with healthcare providers"
-              icon="download"
-              color="#2196F3"
-              onPress={handleExportData}
-            />
             <ActionButton
               title="Clear All Data"
               subtitle="Remove all medicines and reminders"

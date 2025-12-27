@@ -15,24 +15,39 @@ const RemindersScreen = () => {
   useEffect(() => {
     loadReminders();
     setupNotificationListeners();
+    
+    // Auto-sync with Medicines page every 2 seconds
+    const interval = setInterval(loadReminders, 2000);
+    return () => clearInterval(interval);
   }, []);
 
   const loadReminders = async () => {
     try {
       const storedReminders = await DataService.getReminders();
-      setReminders(storedReminders);
+      
+      // Remove duplicates based on medicine name + time
+      const uniqueReminders = [];
+      const seenKeys = new Set();
+      
+      storedReminders.forEach(reminder => {
+        const key = `${reminder.medicine.toLowerCase()}-${reminder.time}`;
+        if (!seenKeys.has(key)) {
+          seenKeys.add(key);
+          uniqueReminders.push(reminder);
+        }
+      });
+      
+      setReminders(uniqueReminders);
     } catch (error) {
       console.error('Error loading reminders:', error);
     }
   };
 
   const setupNotificationListeners = () => {
-    // Listen for notification responses
     const subscription = NotificationService.addNotificationResponseListener((response) => {
       const { data } = response.notification.request.content;
       
       if (data.type === 'medication_reminder') {
-        // Show feedback modal after a delay
         setTimeout(() => {
           setSelectedMedication({
             id: data.reminderId,
@@ -40,7 +55,7 @@ const RemindersScreen = () => {
             dosage: data.dosage
           });
           setShowFeedbackModal(true);
-        }, 60000); // Show feedback prompt after 1 minute
+        }, 60000);
       }
     });
 
@@ -49,14 +64,38 @@ const RemindersScreen = () => {
 
   const markMedicationTaken = async (reminder) => {
     try {
-      // Record medication as taken
-      await DataService.recordMedicationTaken(reminder.id, new Date().toISOString());
+      // Parse scheduled time and check if it has passed
+      const now = new Date();
+      const [timeStr, period] = reminder.time.split(' ');
+      const [hours, minutes] = timeStr.split(':').map(Number);
+      let scheduledHour = hours;
       
-      // Schedule feedback prompt
+      if (period === 'PM' && hours !== 12) {
+        scheduledHour += 12;
+      } else if (period === 'AM' && hours === 12) {
+        scheduledHour = 0;
+      }
+
+      const scheduledTime = new Date();
+      scheduledTime.setHours(scheduledHour, minutes, 0, 0);
+
+      // Check if current time is past scheduled time
+      if (now < scheduledTime) {
+        Alert.alert(
+          'Too Early! ⏰',
+          `You can only mark this medicine as taken after the scheduled time (${reminder.time}).\n\nThis ensures accurate medication tracking.`,
+          [{ text: 'Understood', style: 'default' }]
+        );
+        await TTSService.speak(`Please wait until ${reminder.time} to mark this medicine as taken.`);
+        return;
+      }
+
+      // Record with scheduled time (IST system time)
+      await DataService.recordMedicationTaken(reminder.id, scheduledTime.toISOString());
       await NotificationService.scheduleFeedbackPrompt(
         reminder.id,
         reminder.medicine,
-        60 // 60 minutes after taking
+        60
       );
       
       Alert.alert(
@@ -65,7 +104,6 @@ const RemindersScreen = () => {
         [{ text: 'OK', style: 'default' }]
       );
       
-      // Speak confirmation
       await TTSService.speak(`Great job taking your ${reminder.medicine}!`);
       
     } catch (error) {
@@ -76,7 +114,6 @@ const RemindersScreen = () => {
 
   const handleFeedbackSubmitted = async (feedbackData) => {
     console.log('Feedback submitted:', feedbackData);
-    // Refresh reminders or update UI as needed
     await loadReminders();
   };
 
@@ -87,14 +124,10 @@ const RemindersScreen = () => {
       });
       
       if (updatedReminder.status === 'active') {
-        // Schedule notification
         await NotificationService.scheduleMedicationReminder(updatedReminder);
-      } else {
-        // Cancel notification (would need to store notification ID)
-        // await NotificationService.cancelNotification(notificationId);
       }
       
-      await loadReminders(); // Refresh list
+      await loadReminders();
       
     } catch (error) {
       Alert.alert('Error', 'Failed to toggle reminder: ' + error.message);
@@ -107,20 +140,6 @@ const RemindersScreen = () => {
       Alert.alert('Test Sent! 📱', 'Check if the notification appeared correctly.');
     } catch (error) {
       Alert.alert('Error', 'Failed to send test: ' + error.message);
-    }
-  };
-
-  const formatNextReminder = (date) => {
-    const now = new Date();
-    const tomorrow = new Date(now);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    
-    if (date.toDateString() === now.toDateString()) {
-      return 'Today';
-    } else if (date.toDateString() === tomorrow.toDateString()) {
-      return 'Tomorrow';
-    } else {
-      return date.toLocaleDateString();
     }
   };
 
@@ -174,22 +193,14 @@ const RemindersScreen = () => {
 
         <View style={styles.reminderDetails}>
           <View style={styles.detailRow}>
-            <Ionicons 
-              name="calendar-outline" 
-              size={16} 
-              color={isActive ? '#666' : '#ccc'} 
-            />
+            <Ionicons name="calendar-outline" size={16} color={isActive ? '#666' : '#ccc'} />
             <Text style={[styles.detailText, !isActive && styles.disabledText]}>
               Daily reminder
             </Text>
           </View>
           
           <View style={styles.detailRow}>
-            <Ionicons 
-              name="time-outline" 
-              size={16} 
-              color={isActive ? '#666' : '#ccc'} 
-            />
+            <Ionicons name="time-outline" size={16} color={isActive ? '#666' : '#ccc'} />
             <Text style={[styles.detailText, !isActive && styles.disabledText]}>
               Created: {new Date(reminder.createdAt).toLocaleDateString()}
             </Text>
@@ -197,18 +208,12 @@ const RemindersScreen = () => {
         </View>
 
         <View style={styles.cardActions}>
-          <TouchableOpacity 
-            style={styles.actionButton}
-            onPress={() => markMedicationTaken(reminder)}
-          >
+          <TouchableOpacity style={styles.actionButton} onPress={() => markMedicationTaken(reminder)}>
             <Ionicons name="checkmark-circle" size={16} color="#4CAF50" />
             <Text style={[styles.actionButtonText, { color: '#4CAF50' }]}>Mark Taken</Text>
           </TouchableOpacity>
           
-          <TouchableOpacity 
-            style={styles.actionButton}
-            onPress={() => testReminder(reminder)}
-          >
+          <TouchableOpacity style={styles.actionButton} onPress={() => testReminder(reminder)}>
             <Ionicons name="notifications-outline" size={16} color="#2196F3" />
             <Text style={[styles.actionButtonText, { color: '#2196F3' }]}>Test</Text>
           </TouchableOpacity>
@@ -222,7 +227,6 @@ const RemindersScreen = () => {
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* Header */}
       <LinearGradient colors={['#FF9800', '#F57C00']} style={styles.header}>
         <Text style={styles.headerTitle}>Medicine Reminders</Text>
         <Text style={styles.headerSubtitle}>
@@ -230,48 +234,15 @@ const RemindersScreen = () => {
         </Text>
       </LinearGradient>
 
-      {/* Quick Actions */}
       <View style={styles.quickActions}>
-        <TouchableOpacity 
-          style={styles.quickActionButton}
-          onPress={() => {
-            // Enable all reminders
-            setReminders(reminders.map(r => ({ ...r, enabled: true })));
-          }}
-        >
-          <Ionicons name="checkmark-circle" size={20} color="#4CAF50" />
-          <Text style={styles.quickActionText}>Enable All</Text>
+        <TouchableOpacity style={styles.quickActionButton} onPress={handleReadAllReminders}>
+          <Ionicons name="volume-high" size={20} color="#2196F3" />
+          <Text style={styles.quickActionText}>Read All</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity 
-          style={styles.quickActionButton}
-          onPress={() => {
-            // Disable all reminders
-            setReminders(reminders.map(r => ({ ...r, enabled: false })));
-          }}
-        >
-          <Ionicons name="pause-circle" size={20} color="#FF5722" />
-          <Text style={styles.quickActionText}>Pause All</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity 
-          style={styles.quickActionButton}
-          onPress={async () => {
-            try {
-              const testDate = new Date(Date.now() + 3000);
-              await ReminderService.scheduleReminder(
-                testDate,
-                'System Test',
-                'This is a test notification to check if reminders are working properly.'
-              );
-              Alert.alert('Test Scheduled', 'Test notification will appear in 3 seconds');
-            } catch (error) {
-              Alert.alert('Error', 'Failed to schedule test: ' + error.message);
-            }
-          }}
-        >
-          <Ionicons name="flask" size={20} color="#9C27B0" />
-          <Text style={styles.quickActionText}>System Test</Text>
+        <TouchableOpacity style={styles.quickActionButton} onPress={handleTestReminderSound}>
+          <Ionicons name="megaphone" size={20} color="#9C27B0" />
+          <Text style={styles.quickActionText}>Test Sound</Text>
         </TouchableOpacity>
       </View>
 
@@ -291,24 +262,16 @@ const RemindersScreen = () => {
         )}
       </ScrollView>
 
-      {/* Info Card */}
       <View style={styles.infoCard}>
         <View style={styles.infoHeader}>
           <Ionicons name="information-circle" size={20} color="#2196F3" />
           <Text style={styles.infoTitle}>💡 Reminder Tips</Text>
         </View>
-        <Text style={styles.infoText}>
-          • Mark medications as taken to track adherence
-        </Text>
-        <Text style={styles.infoText}>
-          • Test notifications to ensure they work properly
-        </Text>
-        <Text style={styles.infoText}>
-          • Provide feedback to help improve your care
-        </Text>
+        <Text style={styles.infoText}>• Mark medications as taken to track adherence</Text>
+        <Text style={styles.infoText}>• Test notifications to ensure they work properly</Text>
+        <Text style={styles.infoText}>• Provide feedback to help improve your care</Text>
       </View>
 
-      {/* Medication Feedback Modal */}
       <MedicationFeedback
         visible={showFeedbackModal}
         onClose={() => setShowFeedbackModal(false)}
@@ -320,194 +283,35 @@ const RemindersScreen = () => {
 };
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    padding: 20,
-    backgroundColor: '#fff',
-    alignItems: 'center', // Center items horizontally
-  },
-  header: {
-    padding: 20,
-    paddingTop: 40,
-    borderBottomLeftRadius: 20,
-    borderBottomRightRadius: 20,
-  },
-  headerTitle: {
-    color: 'white',
-    fontSize: 24,
-    fontWeight: 'bold',
-  },
-  headerSubtitle: {
-    color: 'white',
-    fontSize: 14,
-    opacity: 0.9,
-    marginTop: 5,
-  },
-  quickActions: {
-    flexDirection: 'row',
-    paddingHorizontal: 20,
-    paddingVertical: 15,
-    justifyContent: 'space-between',
-  },
-  quickActionButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'white',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 20,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-  },
-  quickActionText: {
-    fontSize: 12,
-    fontWeight: '600',
-    marginLeft: 4,
-    color: '#333',
-  },
-  content: {
-    flex: 1,
-    paddingHorizontal: 20,
-  },
-  reminderCard: {
-    backgroundColor: 'white',
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 12,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-  },
-  disabledCard: {
-    opacity: 0.6,
-  },
-  cardHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  reminderInfo: {
-    flex: 1,
-  },
-  medicineName: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#2c3e50',
-  },
-  reminderTime: {
-    fontSize: 16,
-    color: '#FF9800',
-    fontWeight: '600',
-    marginTop: 2,
-  },
-  disabledText: {
-    color: '#ccc',
-  },
-  reminderDetails: {
-    marginBottom: 12,
-  },
-  detailRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 6,
-  },
-  detailText: {
-    fontSize: 14,
-    color: '#666',
-    marginLeft: 8,
-    flex: 1,
-  },
-  cardActions: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    borderTopWidth: 1,
-    borderTopColor: '#f0f0f0',
-    paddingTop: 12,
-  },
-  dosageText: {
-    fontSize: 14,
-    color: '#9C27B0',
-    fontWeight: '500',
-    marginTop: 2,
-  },
-  actionButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 16,
-    backgroundColor: '#f8f9fa',
-    marginLeft: 8,
-  },
-  actionButtonText: {
-    fontSize: 12,
-    marginLeft: 4,
-    fontWeight: '600',
-  },
-  emptyState: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 60,
-  },
-  emptyText: {
-    fontSize: 18,
-    color: '#999',
-    marginTop: 16,
-    fontWeight: '600',
-  },
-  emptySubtext: {
-    fontSize: 14,
-    color: '#ccc',
-    marginTop: 8,
-    textAlign: 'center',
-  },
-  voiceCommandSection: {
-    alignItems: 'center',
-    marginVertical: 20,
-    width: '100%',
-  },
-  micButton: {
-    marginVertical: 15,
-  },
-  micLabel: {
-    fontSize: 16,
-    color: '#666',
-    marginBottom: 20,
-  },
-  infoCard: {
-    backgroundColor: 'white',
-    margin: 20,
-    padding: 16,
-    borderRadius: 12,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-  },
-  infoHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  infoTitle: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#2c3e50',
-    marginLeft: 8,
-  },
-  infoText: {
-    fontSize: 14,
-    color: '#666',
-    marginBottom: 4,
-    lineHeight: 20,
-  },
+  container: { flex: 1, backgroundColor: '#f5f5f5' },
+  header: { padding: 20, paddingTop: 40, borderBottomLeftRadius: 20, borderBottomRightRadius: 20 },
+  headerTitle: { color: 'white', fontSize: 24, fontWeight: 'bold' },
+  headerSubtitle: { color: 'white', fontSize: 14, opacity: 0.9, marginTop: 5 },
+  quickActions: { flexDirection: 'row', paddingHorizontal: 20, paddingVertical: 15, justifyContent: 'space-between' },
+  quickActionButton: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'white', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 20, elevation: 2, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.1, shadowRadius: 2 },
+  quickActionText: { fontSize: 12, fontWeight: '600', marginLeft: 4, color: '#333' },
+  content: { flex: 1, paddingHorizontal: 20 },
+  reminderCard: { backgroundColor: 'white', borderRadius: 12, padding: 16, marginBottom: 12, elevation: 2, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4 },
+  disabledCard: { opacity: 0.6 },
+  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+  reminderInfo: { flex: 1 },
+  medicineName: { fontSize: 18, fontWeight: 'bold', color: '#333', marginBottom: 4 },
+  reminderTime: { fontSize: 16, color: '#666', marginBottom: 2 },
+  dosageText: { fontSize: 14, color: '#888' },
+  disabledText: { color: '#ccc' },
+  reminderDetails: { marginBottom: 12 },
+  detailRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
+  detailText: { fontSize: 12, color: '#666', marginLeft: 6 },
+  cardActions: { flexDirection: 'row', justifyContent: 'space-around', borderTopWidth: 1, borderTopColor: '#eee', paddingTop: 12 },
+  actionButton: { flexDirection: 'row', alignItems: 'center' },
+  actionButtonText: { fontSize: 12, fontWeight: '600', marginLeft: 4 },
+  emptyState: { alignItems: 'center', justifyContent: 'center', paddingVertical: 60 },
+  emptyText: { fontSize: 18, color: '#999', marginTop: 16, fontWeight: '600' },
+  emptySubtext: { fontSize: 14, color: '#bbb', marginTop: 8, textAlign: 'center', paddingHorizontal: 40 },
+  infoCard: { backgroundColor: '#E3F2FD', margin: 16, padding: 16, borderRadius: 12, borderLeftWidth: 4, borderLeftColor: '#2196F3' },
+  infoHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 12 },
+  infoTitle: { fontSize: 16, fontWeight: 'bold', color: '#1976D2', marginLeft: 8 },
+  infoText: { fontSize: 13, color: '#1565C0', marginBottom: 6, lineHeight: 20 },
 });
 
 export default RemindersScreen;

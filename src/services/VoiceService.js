@@ -1,108 +1,100 @@
 import { Audio } from 'expo-av';
-import * as FileSystem from 'expo-file-system';
 
 class VoiceService {
-  static recording = null;
-
-  static async requestPermissions() {
-    try {
-      const permission = await Audio.requestPermissionsAsync();
-      if (!permission.granted) {
-        throw new Error('Microphone permission required');
-      }
-      return true;
-    } catch (error) {
-      console.error('Permission error:', error);
-      throw error;
-    }
+  constructor() {
+    this.recording = null;
+    this.isRecording = false;
   }
 
-  static async startRecording() {
+  // For components that call startRecording()
+  async startRecording() {
     try {
-      // Request permissions first
-      await this.requestPermissions();
+      // Cancel any existing recording first
+      if (this.recording) {
+        try {
+          await this.recording.stopAndUnloadAsync();
+        } catch (e) {
+          console.log('Cleaned up previous recording');
+        }
+        this.recording = null;
+      }
 
-      // Set audio mode
+      console.log('📱 Requesting microphone permission...');
+      const permission = await Audio.requestPermissionsAsync();
+      
+      if (!permission.granted) {
+        throw new Error('Microphone permission denied');
+      }
+
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: true,
         playsInSilentModeIOS: true,
       });
 
-      // Create recording instance
-      this.recording = new Audio.Recording();
+      console.log('🎤 Starting recording...');
+      const { recording } = await Audio.Recording.createAsync(
+        Audio.RecordingOptionsPresets.HIGH_QUALITY
+      );
       
-      const recordingOptions = {
-        android: {
-          extension: '.m4a',
-          outputFormat: Audio.RECORDING_OPTION_ANDROID_OUTPUT_FORMAT_MPEG_4,
-          audioEncoder: Audio.RECORDING_OPTION_ANDROID_AUDIO_ENCODER_AAC,
-          sampleRate: 44100,
-          numberOfChannels: 2,
-          bitRate: 128000,
-        },
-        ios: {
-          extension: '.m4a',
-          audioQuality: Audio.RECORDING_OPTION_IOS_AUDIO_QUALITY_HIGH,
-          sampleRate: 44100,
-          numberOfChannels: 2,
-          bitRate: 128000,
-          linearPCMBitDepth: 16,
-          linearPCMIsBigEndian: false,
-          linearPCMIsFloat: false,
-        },
-      };
-
-      await this.recording.prepareToRecordAsync(recordingOptions);
-      await this.recording.startAsync();
-
-      // Record for 5 seconds
-      setTimeout(async () => {
-        await this.stopRecording();
-      }, 5000);
-
-      return new Promise((resolve) => {
-        this.recordingResolve = resolve;
-      });
+      this.recording = recording;
+      this.isRecording = true;
+      
+      console.log('✅ Recording started');
+      return recording; // Return recording object, not boolean
 
     } catch (error) {
-      console.error('Recording error:', error);
+      console.error('❌ Failed to start recording:', error);
+      this.recording = null;
+      this.isRecording = false;
       throw error;
     }
   }
 
-  static async stopRecording() {
+  // For components that call startListening() - same as startRecording
+  async startListening() {
+    return this.startRecording();
+  }
+
+  async stopRecording() {
     try {
       if (!this.recording) {
-        return null;
+        throw new Error('No active recording');
       }
 
+      console.log('⏹️ Stopping recording...');
       await this.recording.stopAndUnloadAsync();
       const uri = this.recording.getURI();
+      
       this.recording = null;
+      this.isRecording = false;
 
-      // Copy to a persistent location
-      const fileName = `recording_${Date.now()}.m4a`;
-      const newUri = FileSystem.documentDirectory + fileName;
-      
-      if (uri) {
-        await FileSystem.copyAsync({
-          from: uri,
-          to: newUri,
-        });
-        
-        if (this.recordingResolve) {
-          this.recordingResolve(newUri);
-        }
-        
-        return newUri;
-      }
-      
-      return null;
+      console.log('✅ Recording saved:', uri);
+      return uri;
+
     } catch (error) {
-      console.error('Stop recording error:', error);
+      console.error('❌ Failed to stop recording:', error);
+      this.recording = null;
+      this.isRecording = false;
       throw error;
     }
+  }
+
+  async cancelRecording() {
+    try {
+      if (this.recording) {
+        await this.recording.stopAndUnloadAsync();
+        this.recording = null;
+      }
+      this.isRecording = false;
+      console.log('🚫 Recording cancelled');
+    } catch (error) {
+      console.error('Failed to cancel recording:', error);
+    }
+  }
+
+  getRecordingStatus() {
+    return this.isRecording;
   }
 }
 
-export default VoiceService;
+export default new VoiceService();

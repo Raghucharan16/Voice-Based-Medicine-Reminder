@@ -71,23 +71,115 @@ class DataService {
   }
 
   // Medication History
-  static async recordMedicationTaken(medicationId, reminderTime, actualTime = null) {
+  static async recordMedicationTaken(medicationId, scheduledTime, actualTime = null) {
     try {
       const history = await this.getMedicationHistory();
+      const actualTakenTime = actualTime || new Date().toISOString();
+      
+      // Enhanced duplicate check: prevent multiple records for same medication on same scheduled time
+      // Check within a 30-minute window of the scheduled time to handle late taking within threshold
+      const scheduledDate = new Date(scheduledTime);
+      const scheduledDateStr = scheduledDate.toDateString();
+      
+      // Find existing record for this medication on this scheduled date/time
+      const alreadyRecorded = history.find(h => {
+        if (h.medicationId !== medicationId || h.status !== 'taken') return false;
+        
+        const hScheduledDate = new Date(h.scheduledTime);
+        const hScheduledDateStr = hScheduledDate.toDateString();
+        
+        // Check if it's the same date and within 30 min of scheduled time
+        if (hScheduledDateStr !== scheduledDateStr) return false;
+        
+        // Check if scheduled times are within 30 minutes of each other (same dose)
+        const timeDiff = Math.abs(hScheduledDate - scheduledDate) / (1000 * 60);
+        return timeDiff < 30;
+      });
+      
+      if (alreadyRecorded) {
+        console.log('⚠️ Medication already recorded for this scheduled time:', {
+          medicationId,
+          scheduledTime,
+          existingRecord: alreadyRecorded.id
+        });
+        return alreadyRecorded; // Return existing record, don't create duplicate
+      }
+      
       const record = {
         id: Date.now().toString(),
         medicationId,
-        reminderTime,
-        actualTime: actualTime || new Date().toISOString(),
+        scheduledTime: scheduledTime, // When it was supposed to be taken
+        actualTime: actualTakenTime,  // When it was actually taken (system time in IST)
         status: 'taken',
-        delay: actualTime ? this.calculateDelay(reminderTime, actualTime) : 0
+        delay: this.calculateDelay(scheduledTime, actualTakenTime)
       };
+      
+      console.log('✅ Recording new medication taken:', {
+        medicationId,
+        scheduledTime,
+        actualTime: actualTakenTime,
+        delay: record.delay
+      });
       
       history.push(record);
       await AsyncStorage.setItem(this.KEYS.MEDICATION_HISTORY, JSON.stringify(history));
       return record;
     } catch (error) {
       console.error('Error recording medication taken:', error);
+      throw error;
+    }
+  }
+
+  // Record missed medication
+  static async recordMedicationMissed(medicationId, scheduledTime, actualTime = null) {
+    try {
+      const history = await this.getMedicationHistory();
+      
+      // Prevent duplicate missed records for same medication at same scheduled time
+      const scheduledDate = new Date(scheduledTime);
+      const scheduledDateStr = scheduledDate.toDateString();
+      
+      const alreadyRecorded = history.find(h => {
+        if (h.medicationId !== medicationId || h.status !== 'missed') return false;
+        
+        const hScheduledDate = new Date(h.scheduledTime);
+        const hScheduledDateStr = hScheduledDate.toDateString();
+        
+        // Same date and within 30 min window
+        if (hScheduledDateStr !== scheduledDateStr) return false;
+        
+        const timeDiff = Math.abs(hScheduledDate - scheduledDate) / (1000 * 60);
+        return timeDiff < 30;
+      });
+      
+      if (alreadyRecorded) {
+        console.log('⚠️ Medication already recorded as missed for this scheduled time:', {
+          medicationId,
+          scheduledTime,
+          existingRecord: alreadyRecorded.id
+        });
+        return alreadyRecorded;
+      }
+      
+      const record = {
+        id: Date.now().toString(),
+        medicationId,
+        scheduledTime: scheduledTime, // When it was supposed to be taken
+        actualTime: actualTime || new Date().toISOString(),
+        status: 'missed',
+        delay: 0
+      };
+      
+      console.log('✅ Recording medication missed:', {
+        medicationId,
+        scheduledTime
+      });
+      
+      history.push(record);
+      await AsyncStorage.setItem(this.KEYS.MEDICATION_HISTORY, JSON.stringify(history));
+      return record;
+    } catch (error) {
+      console.error('Error recording medication missed:', error);
       throw error;
     }
   }
@@ -102,10 +194,10 @@ class DataService {
     }
   }
 
-  static calculateDelay(reminderTime, actualTime) {
-    const reminder = new Date(reminderTime);
+  static calculateDelay(scheduledTime, actualTime) {
+    const scheduled = new Date(scheduledTime);
     const actual = new Date(actualTime);
-    return Math.max(0, Math.floor((actual - reminder) / (1000 * 60))); // Delay in minutes
+    return Math.max(0, Math.floor((actual - scheduled) / (1000 * 60))); // Delay in minutes
   }
 
   // Feedback Management

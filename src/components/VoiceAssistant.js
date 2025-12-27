@@ -7,6 +7,7 @@ import {
   Alert,
   ActivityIndicator,
   Modal,
+  ScrollView,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
@@ -45,33 +46,51 @@ const VoiceAssistant = ({ onReminderCreated, visible, onClose }) => {
 
   const handleVoiceInput = async () => {
     try {
-      setIsRecording(true);
-      setCurrentStep('listening');
-      
-      const audioUri = await VoiceService.startRecording();
-      
-      if (audioUri) {
+      if (isRecording) {
+        // Stop recording and process
+        console.log('🛑 Stopping recording in VoiceAssistant...');
         setIsRecording(false);
         setIsProcessing(true);
         setCurrentStep('processing');
         
-        // Transcribe audio
-        const transcription = await AIService.transcribeAudio(audioUri);
+        const audioUri = await VoiceService.stopRecording();
+        console.log('📁 Audio file from VoiceAssistant:', audioUri);
         
-        if (transcription) {
+        // Transcribe the audio
+        const transcriptionResult = await AIService.transcribeAudio(audioUri);
+        const transcript = transcriptionResult.text; // Extract text from result object
+        
+        if (transcript && transcript.trim()) {
+          console.log('📝 Transcribed in VoiceAssistant:', transcript);
+          
           // Add user message to conversation
-          setConversation(prev => [...prev, { type: 'user', message: transcription }]);
+          setConversation(prev => [...prev, { type: 'user', message: transcript }]);
           
           // Process with AI
-          await processUserInput(transcription);
+          await processUserInput(transcript);
+        } else {
+          setIsProcessing(false);
+          setCurrentStep('idle');
+          await TTSService.speak("I couldn't understand that. Please try again.");
+          Alert.alert('Error', 'Failed to transcribe audio');
         }
+        
+      } else {
+        // Start recording - NO TTS to prevent recording system voice
+        console.log('🎙️ Starting recording in VoiceAssistant...');
+        setIsRecording(true);
+        setCurrentStep('listening');
+        
+        await VoiceService.startRecording();
+        // Don't speak during recording - it gets recorded!
       }
+      
     } catch (error) {
+      console.error('❌ Voice input error in VoiceAssistant:', error);
       Alert.alert('Error', 'Failed to process voice input: ' + error.message);
-      setCurrentStep('idle');
-    } finally {
       setIsRecording(false);
       setIsProcessing(false);
+      setCurrentStep('idle');
     }
   };
 
@@ -80,34 +99,70 @@ const VoiceAssistant = ({ onReminderCreated, visible, onClose }) => {
       const result = await AIService.processVoiceCommand(text, conversationContext);
       
       if (result.type === 'question') {
-        // AI needs more information
+        // AI needs more information - ask follow-up question
         setConversationContext(result.conversationContext);
-        setCurrentStep('questioning');
+        setCurrentStep('idle'); // Set to idle so user can record answer
+        setIsProcessing(false); // Stop processing indicator
         
         const response = result.question;
         setConversation(prev => [...prev, { type: 'assistant', message: response }]);
         await TTSService.speak(response);
         
+        // User can now tap to answer the question
+        
       } else if (result.type === 'complete_reminder') {
-        // Reminder is complete
+        // Reminder is complete - ask for confirmation
         setCurrentStep('idle');
-        setConversationContext(null);
+        setIsProcessing(false);
         
-        const response = result.response;
-        setConversation(prev => [...prev, { type: 'assistant', message: response }]);
-        await TTSService.speak(response);
-        
-        // Notify parent component
-        if (onReminderCreated) {
-          onReminderCreated(result.reminder);
+        // Build confirmation message with date/dayOfWeek if present
+        let frequencyInfo = result.reminder.frequency;
+        if (result.reminder.date) {
+          const dateObj = new Date(result.reminder.date);
+          const dateStr = dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+          frequencyInfo = `${result.reminder.frequency} (${dateStr})`;
+        } else if (result.reminder.dayOfWeek) {
+          frequencyInfo = `${result.reminder.frequency} (Every ${result.reminder.dayOfWeek})`;
         }
         
-        // Ask if they want to add another reminder
-        setTimeout(async () => {
-          const followUp = "Would you like to add another reminder or is there anything else I can help you with?";
-          setConversation(prev => [...prev, { type: 'assistant', message: followUp }]);
-          await TTSService.speak(followUp);
-        }, 2000);
+        const confirmMessage = `I've got all the details:\n\n💊 Medicine: ${result.reminder.medicine}\n💉 Dosage: ${result.reminder.dosage}\n🕐 Time: ${result.reminder.time}\n📅 Frequency: ${frequencyInfo}\n\nShould I save this reminder?`;
+        
+        setConversation(prev => [...prev, { type: 'assistant', message: confirmMessage }]);
+        await TTSService.speak("I've got all the details. Should I save this reminder?");
+        
+        // Wait for user confirmation
+        Alert.alert(
+          '✅ Reminder Ready',
+          confirmMessage,
+          [
+            {
+              text: 'Cancel',
+              style: 'cancel',
+              onPress: async () => {
+                await TTSService.speak("Okay, cancelled.");
+                setConversationContext(null);
+                const cancelMsg = "Reminder cancelled. You can start over anytime.";
+                setConversation(prev => [...prev, { type: 'assistant', message: cancelMsg }]);
+              }
+            },
+            {
+              text: 'Save',
+              onPress: async () => {
+                await TTSService.speak("Saving your reminder now");
+                
+                // Notify parent component to save
+                if (onReminderCreated) {
+                  await onReminderCreated(result.reminder);
+                }
+                
+                setConversationContext(null);
+                const successMsg = `✅ Reminder saved for ${result.reminder.medicine} at ${result.reminder.time}!`;
+                setConversation(prev => [...prev, { type: 'assistant', message: successMsg }]);
+                await TTSService.speak(successMsg);
+              }
+            }
+          ]
+        );
       }
     } catch (error) {
       console.error('Error processing user input:', error);
@@ -115,6 +170,7 @@ const VoiceAssistant = ({ onReminderCreated, visible, onClose }) => {
       setConversation(prev => [...prev, { type: 'assistant', message: errorMessage }]);
       await TTSService.speak(errorMessage);
       setCurrentStep('idle');
+      setIsProcessing(false);
     }
   };
 
@@ -169,8 +225,16 @@ const VoiceAssistant = ({ onReminderCreated, visible, onClose }) => {
           </Text>
         </LinearGradient>
 
-        {/* Conversation */}
-        <View style={styles.conversationContainer}>
+        {/* Conversation - Now Scrollable */}
+        <ScrollView 
+          style={styles.conversationContainer}
+          contentContainerStyle={styles.conversationContent}
+          ref={(ref) => {
+            if (ref && conversation.length > 0) {
+              ref.scrollToEnd({ animated: true });
+            }
+          }}
+        >
           {conversation.map((message, index) => (
             <View
               key={index}
@@ -192,7 +256,7 @@ const VoiceAssistant = ({ onReminderCreated, visible, onClose }) => {
               </View>
             </View>
           ))}
-        </View>
+        </ScrollView>
 
         {/* Voice Input Button */}
         <View style={styles.inputContainer}>
@@ -271,7 +335,11 @@ const styles = StyleSheet.create({
   },
   conversationContainer: {
     flex: 1,
+    backgroundColor: '#f5f5f5',
+  },
+  conversationContent: {
     padding: 20,
+    paddingBottom: 40, // Extra space at bottom for scrolling
   },
   messageContainer: {
     marginVertical: 8,

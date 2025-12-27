@@ -32,10 +32,19 @@ const HomeScreen = () => {
   });
 
   useEffect(() => {
-    checkServerConnection();
-    requestPermissions();
-    initializeServices();
-    loadTodayStats();
+    // Stagger initialization to prevent blocking
+    const init = async () => {
+      try {
+        await requestPermissions();
+        await initializeServices();
+        checkServerConnection();
+        loadTodayStats();
+      } catch (error) {
+        console.warn('Initialization error:', error);
+      }
+    };
+    
+    init();
   }, []);
 
   const checkServerConnection = async () => {
@@ -49,7 +58,6 @@ const HomeScreen = () => {
 
   const requestPermissions = async () => {
     try {
-      await VoiceService.requestPermissions();
       await ReminderService.requestPermissions();
     } catch (error) {
       console.warn('Permission error:', error);
@@ -128,8 +136,24 @@ const HomeScreen = () => {
 
   const handleReminderCreated = async (reminder) => {
     try {
-      // Save reminder to local storage
-      const savedReminder = await DataService.saveReminder(reminder);
+      // Check for duplicates
+      const existingReminders = await DataService.getReminders();
+      const isDuplicate = existingReminders.some(r => 
+        r.medicine.toLowerCase() === reminder.medicine.toLowerCase() && 
+        r.time === reminder.time
+      );
+      
+      if (isDuplicate) {
+        Alert.alert('Duplicate', 'This reminder already exists!');
+        return;
+      }
+      
+      // Save reminder to local storage (using saveReminder, not addReminder)
+      const savedReminder = await DataService.saveReminder({
+        ...reminder,
+        status: 'active',
+        createdAt: new Date().toISOString()
+      });
       
       // Schedule notification
       await NotificationService.scheduleMedicationReminder(savedReminder);
@@ -137,11 +161,6 @@ const HomeScreen = () => {
       // Refresh stats
       await loadTodayStats();
       
-      Alert.alert(
-        'Reminder Created! 🎉',
-        `I've set up a reminder for ${reminder.medicine} at ${reminder.time}`,
-        [{ text: 'Great!', style: 'default' }]
-      );
     } catch (error) {
       console.error('Error creating reminder:', error);
       Alert.alert('Error', 'Failed to create reminder: ' + error.message);
@@ -172,9 +191,6 @@ const HomeScreen = () => {
         <LinearGradient colors={['#2196F3', '#21CBF3']} style={styles.header}>
           <Text style={styles.welcomeText}>Welcome Back!</Text>
           <Text style={styles.headerTitle}>Voice Medicine Reminder</Text>
-          <View style={styles.statusContainer}>
-            <Text style={styles.statusText}>AI Status: {serverStatus}</Text>
-          </View>
         </LinearGradient>
 
         {/* Voice Assistant Section */}

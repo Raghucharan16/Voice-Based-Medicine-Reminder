@@ -8,3 +8,4 @@ ios/
 .env
 *.env.example
 *.vscode
+*.md

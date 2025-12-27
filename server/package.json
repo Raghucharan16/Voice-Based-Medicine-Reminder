@@ -2,10 +2,10 @@
   "name": "vbmr-server",
   "version": "2.0.0",
   "private": true,
-  "main": "index.js",
+  "main": "index-enhanced.js",
   "scripts": {
-    "start": "node index.js",
-    "start:enhanced": "node index-enhanced.js",
+    "start": "node index-enhanced.js",
+    "dev": "nodemon index-enhanced.js",
     "test": "node run-all-tests.js",
     "test:api": "node test-api.js",
     "test:multilingual": "node test-multilingual.js",
@@ -13,12 +13,16 @@
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
+    "@huggingface/inference": "^2.8.0",
+    "@react-native-voice/voice": "^3.2.4",
     "axios": "^1.4.0",
     "cors": "^2.8.5",
     "dotenv": "^16.0.0",
     "express": "^4.18.2",
     "form-data": "^4.0.0",
-    "multer": "^1.4.4"
+    "multer": "^1.4.4",
+    "node-fetch": "^2.7.0",
+    "nodemailer": "^7.0.9"
   },
   "devDependencies": {
     "nodemon": "^3.0.0"

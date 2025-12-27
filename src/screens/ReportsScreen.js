@@ -17,18 +17,24 @@ import TTSService from '../services/TTSService';
 
 const ReportsScreen = () => {
   const [healthReport, setHealthReport] = useState(null);
-  const [adherenceStats, setAdherenceStats] = useState(null);
+  const [medicines, setMedicines] = useState([]);
+  const [medicationHistory, setMedicationHistory] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   useEffect(() => {
     loadData();
+    const interval = setInterval(loadData, 5000); // Refresh every 5 seconds
+    return () => clearInterval(interval);
   }, []);
 
   const loadData = async () => {
     try {
-      const stats = await DataService.getAdherenceStats(30); // Last 30 days
-      setAdherenceStats(stats);
+      const reminders = await DataService.getReminders();
+      const history = await DataService.getMedicationHistory();
+      
+      setMedicines(reminders);
+      setMedicationHistory(history);
     } catch (error) {
       console.error('Error loading data:', error);
     }
@@ -37,46 +43,249 @@ const ReportsScreen = () => {
   const generateHealthReport = async () => {
     setIsLoading(true);
     try {
-      const medicationHistory = await DataService.getMedicationHistory();
+      // Get all medication data
+      const reminders = await DataService.getReminders();
+      const history = await DataService.getMedicationHistory();
       const feedbackHistory = await DataService.getFeedbackHistory();
       
-      if (medicationHistory.length === 0) {
+      console.log('🏥 Generating report with:');
+      console.log('- Reminders:', reminders.length);
+      console.log('- History:', history.length);
+      console.log('- Feedback:', feedbackHistory.length);
+      
+      if (reminders.length === 0) {
         Alert.alert(
-          "No Data Available", 
-          "You don't have enough medication history to generate a comprehensive report. Start tracking your medications to get personalized insights!"
+          "No Medications Found", 
+          "Please add some medications first to generate a health report."
         );
         setIsLoading(false);
         return;
       }
 
-      const reportData = await AIService.generateHealthReport(medicationHistory, feedbackHistory);
+      // Prepare comprehensive medication data for AI with complete history
+      const medicationData = history.map(h => {
+        const reminder = reminders.find(r => r.id === h.medicationId);
+        return {
+          id: h.id,
+          medicationId: h.medicationId,
+          medicine: reminder?.medicine || 'Unknown',
+          dosage: reminder?.dosage || 'As prescribed',
+          frequency: reminder?.frequency || 'Daily',
+          time: reminder?.time || 'N/A',
+          scheduledTime: h.scheduledTime,
+          actualTime: h.actualTime,
+          status: h.status,
+          delay: h.delay || 0
+        };
+      });
+
+      console.log('📤 Sending to AI:', medicationData.length, 'history records');
+      console.log('📤 Feedback to AI:', feedbackHistory.length, 'feedback records');
+
+      // Call AI service with comprehensive data including feedback
+      const reportData = await AIService.generateHealthReport(medicationData, feedbackHistory);
+      
+      console.log('✅ AI Report received:', reportData.aiPowered ? 'AI-powered' : 'Fallback');
+      console.log('📄 Report text length:', reportData.report?.length || 0);
+      console.log('📄 Report preview:', reportData.report?.substring(0, 200) || 'NO REPORT');
+      
+      if (!reportData || !reportData.report) {
+        Alert.alert('Error', 'Failed to generate report. Please try again.');
+        setIsLoading(false);
+        return;
+      }
+      
       setHealthReport(reportData);
       
       // Speak a summary
-      await TTSService.speak("Your AI health report is ready! It includes personalized insights and dietary recommendations based on your medication history.");
+      if (reportData.aiPowered) {
+        await TTSService.speak("Your AI health report is ready! It includes personalized insights, dietary recommendations, and exercise suggestions.");
+      } else {
+        await TTSService.speak("Your health report is ready.");
+      }
       
     } catch (error) {
-      console.error('Report generation error:', error);
-      Alert.alert('Error', 'Failed to generate health report. Please check your internet connection and try again.');
+      console.error('❌ Report generation error:', error);
+      Alert.alert('Error', 'Failed to generate health report: ' + error.message);
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleSpeak = async () => {
-    if (isSpeaking) {
-      TTSService.stop();
-      setIsSpeaking(false);
-    } else {
-      if (healthReport) {
-        setIsSpeaking(true);
-        try {
-          await TTSService.speak(healthReport.report);
-        } catch (error) {
-          console.error('TTS error:', error);
-        } finally {
-          setIsSpeaking(false);
+  const calculateOverallAdherence = () => {
+    if (medicationHistory.length === 0) return 0;
+    const taken = medicationHistory.filter(h => h.status === 'taken').length;
+    return Math.round((taken / medicationHistory.length) * 100);
+  };
+
+  const getAdherenceBreakdown = () => {
+    const total = medicationHistory.length;
+    const taken = medicationHistory.filter(h => h.status === 'taken').length;
+    const missed = medicationHistory.filter(h => h.status === 'missed').length;
+    
+    // Calculate on-time vs late
+    const takenOnTime = medicationHistory.filter(h => 
+      h.status === 'taken' && h.delay <= 15
+    ).length;
+    const takenLate = medicationHistory.filter(h => 
+      h.status === 'taken' && h.delay > 15
+    ).length;
+
+    return {
+      total,
+      taken,
+      missed,
+      takenOnTime,
+      takenLate,
+      adherenceRate: total > 0 ? Math.round((taken / total) * 100) : 0,
+      onTimeRate: taken > 0 ? Math.round((takenOnTime / taken) * 100) : 0,
+    };
+  };
+
+  const renderMarkdownReport = (reportText) => {
+    if (!reportText) return null;
+
+    // Split by lines and render with formatting
+    const lines = reportText.split('\n');
+    let inSuggestionsSection = false;
+    const mainReportLines = [];
+    const suggestionLines = [];
+    
+    // Separate suggestions from main report
+    lines.forEach((line) => {
+      // Detect suggestions section
+      if (line.toLowerCase().includes('suggestion') || 
+          line.toLowerCase().includes('recommendation') ||
+          line.toLowerCase().includes('tips')) {
+        inSuggestionsSection = true;
+      }
+      
+      if (inSuggestionsSection) {
+        suggestionLines.push(line);
+      } else {
+        mainReportLines.push(line);
+      }
+    });
+    
+    const formatLines = (lineArray) => {
+      return lineArray.map((line, index) => {
+        // Headers (# ## ###)
+        if (line.startsWith('### ')) {
+          return (
+            <Text key={index} style={styles.heading3}>
+              {line.replace('### ', '')}
+            </Text>
+          );
         }
+        if (line.startsWith('## ')) {
+          return (
+            <Text key={index} style={styles.heading2}>
+              {line.replace('## ', '')}
+            </Text>
+          );
+        }
+        if (line.startsWith('# ')) {
+          return (
+            <Text key={index} style={styles.heading1}>
+              {line.replace('# ', '')}
+            </Text>
+          );
+        }
+        
+        // Bold text (**text**)
+        if (line.includes('**')) {
+          const parts = line.split('**');
+          return (
+            <Text key={index} style={styles.paragraph}>
+              {parts.map((part, i) => 
+                i % 2 === 1 ? <Text key={i} style={styles.bold}>{part}</Text> : part
+              )}
+            </Text>
+          );
+        }
+        
+        // Bullet points (- or *)
+        if (line.trim().startsWith('- ') || line.trim().startsWith('* ')) {
+          return (
+            <Text key={index} style={styles.bulletPoint}>
+              • {line.trim().substring(2)}
+            </Text>
+          );
+        }
+        
+        // Numbered lists (1. 2. etc)
+        if (/^\d+\.\s/.test(line.trim())) {
+          return (
+            <Text key={index} style={styles.numberedPoint}>
+              {line.trim()}
+            </Text>
+          );
+        }
+        
+        // Horizontal rule (---)
+        if (line.trim() === '---') {
+          return <View key={index} style={styles.divider} />;
+        }
+        
+        // Empty lines
+        if (line.trim() === '') {
+          return <View key={index} style={{ height: 10 }} />;
+        }
+        
+        // Regular text
+        return (
+          <Text key={index} style={styles.paragraph}>
+            {line}
+          </Text>
+        );
+      });
+    };
+
+    return {
+      mainReport: formatLines(mainReportLines),
+      suggestions: formatLines(suggestionLines),
+      hasSuggestions: suggestionLines.length > 0
+    };
+  };
+
+  const MedicineCard = ({ medicine }) => {
+    const medHistory = medicationHistory.filter(h => h.medicationId === medicine.id);
+    const taken = medHistory.filter(h => h.status === 'taken').length;
+    const missed = medHistory.filter(h => h.status === 'missed').length;
+    const total = taken + missed;
+    const adherence = total > 0 ? Math.round((taken / total) * 100) : 0;
+
+    return (
+      <View style={styles.medicineCard}>
+        <View style={styles.medicineHeader}>
+          <Ionicons name="medical" size={20} color="#2196F3" />
+          <Text style={styles.medicineName}>{medicine.medicine}</Text>
+        </View>
+        <Text style={styles.medicineDetail}>💊 {medicine.dosage || 'As prescribed'}</Text>
+        <Text style={styles.medicineDetail}>🕐 {medicine.time}</Text>
+        <Text style={styles.medicineDetail}>📅 {medicine.frequency}</Text>
+        
+        <View style={styles.adherenceBar}>
+          <View style={styles.adherenceBarBg}>
+            <View style={[styles.adherenceBarFill, { width: `${adherence}%` }]} />
+          </View>
+          <Text style={styles.adherenceText}>{adherence}% adherence</Text>
+        </View>
+        
+        <View style={styles.medicineStats}>
+          <Text style={styles.statItem}>✅ Taken: {taken}</Text>
+          <Text style={styles.statItem}>❌ Missed: {missed}</Text>
+        </View>
+      </View>
+    );
+  };
+
+  const handleSpeak = async () => {
+    if (healthReport) {
+      try {
+        await TTSService.speak(healthReport.report);
+      } catch (error) {
+        console.error('TTS error:', error);
       }
     }
   };
@@ -105,7 +314,7 @@ const ReportsScreen = () => {
   return (
     <SafeAreaView style={styles.container}>
       {/* Header */}
-      <LinearGradient colors={['#2196F3', '#1976D2']} style={styles.header}>
+      <LinearGradient colors={['#9C27B0', '#7B1FA2']} style={styles.header}>
         <Text style={styles.headerTitle}>📊 Health Reports</Text>
         <Text style={styles.headerSubtitle}>
           AI-powered insights and recommendations
@@ -113,42 +322,118 @@ const ReportsScreen = () => {
       </LinearGradient>
 
       <ScrollView style={styles.content}>
-        {/* Adherence Statistics */}
-        {adherenceStats && (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>📈 30-Day Overview</Text>
-            <View style={styles.statsGrid}>
-              <StatCard
-                title="Adherence Rate"
-                value={`${adherenceStats.adherenceRate}%`}
-                icon="checkmark-circle"
-                color="#4CAF50"
-                subtitle="On-time medications"
-              />
-              <StatCard
-                title="Total Reminders"
-                value={adherenceStats.totalReminders}
-                icon="alarm"
-                color="#FF9800"
-                subtitle="Scheduled doses"
-              />
-              <StatCard
-                title="Average Delay"
-                value={`${adherenceStats.averageDelay}m`}
-                icon="time"
-                color="#2196F3"
-                subtitle="Minutes late"
-              />
-              <StatCard
-                title="Missed Doses"
-                value={adherenceStats.missed}
-                icon="close-circle"
-                color="#F44336"
-                subtitle="Requires attention"
-              />
+        {/* Overall Stats */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>📈 Medication Adherence Report</Text>
+          
+          {(() => {
+            const breakdown = getAdherenceBreakdown();
+            return (
+              <>
+                <View style={styles.overallStatsCard}>
+                  <View style={styles.statRow}>
+                    <View style={styles.statBox}>
+                      <Text style={[styles.statValue, { color: '#4CAF50' }]}>
+                        {breakdown.adherenceRate}%
+                      </Text>
+                      <Text style={styles.statLabel}>Overall Adherence</Text>
+                    </View>
+                    <View style={styles.statBox}>
+                      <Text style={styles.statValue}>{breakdown.total}</Text>
+                      <Text style={styles.statLabel}>Total Scheduled</Text>
+                    </View>
+                  </View>
+                  <View style={styles.statRow}>
+                    <View style={styles.statBox}>
+                      <Text style={[styles.statValue, { color: '#4CAF50' }]}>
+                        {breakdown.taken}
+                      </Text>
+                      <Text style={styles.statLabel}>Doses Taken</Text>
+                    </View>
+                    <View style={styles.statBox}>
+                      <Text style={[styles.statValue, { color: '#F44336' }]}>
+                        {breakdown.missed}
+                      </Text>
+                      <Text style={styles.statLabel}>Doses Missed</Text>
+                    </View>
+                  </View>
+                </View>
+
+                {/* Detailed Adherence Breakdown */}
+                <View style={styles.adherenceDetailCard}>
+                  <Text style={styles.adherenceDetailTitle}>📊 Detailed Breakdown</Text>
+                  
+                  <View style={styles.adherenceDetailRow}>
+                    <View style={styles.adherenceDetailItem}>
+                      <Ionicons name="checkmark-circle" size={24} color="#4CAF50" />
+                      <View style={styles.adherenceDetailText}>
+                        <Text style={styles.adherenceDetailValue}>{breakdown.takenOnTime}</Text>
+                        <Text style={styles.adherenceDetailLabel}>Taken On Time</Text>
+                        <Text style={styles.adherenceDetailSubtext}>(within 15 min)</Text>
+                      </View>
+                    </View>
+                    
+                    <View style={styles.adherenceDetailItem}>
+                      <Ionicons name="time" size={24} color="#FF9800" />
+                      <View style={styles.adherenceDetailText}>
+                        <Text style={styles.adherenceDetailValue}>{breakdown.takenLate}</Text>
+                        <Text style={styles.adherenceDetailLabel}>Taken Late</Text>
+                        <Text style={styles.adherenceDetailSubtext}>(after 15 min)</Text>
+                      </View>
+                    </View>
+                  </View>
+
+                  {breakdown.taken > 0 && (
+                    <View style={styles.onTimeRateContainer}>
+                      <Text style={styles.onTimeRateText}>
+                        ⏰ On-Time Rate: {breakdown.onTimeRate}%
+                      </Text>
+                      <View style={styles.onTimeRateBar}>
+                        <View 
+                          style={[
+                            styles.onTimeRateFill, 
+                            { width: `${breakdown.onTimeRate}%` }
+                          ]} 
+                        />
+                      </View>
+                    </View>
+                  )}
+
+                  {/* Adherence Interpretation */}
+                  <View style={styles.adherenceInterpretation}>
+                    {breakdown.adherenceRate >= 80 ? (
+                      <Text style={styles.adherenceGood}>
+                        ✅ Excellent adherence! Keep up the great work.
+                      </Text>
+                    ) : breakdown.adherenceRate >= 60 ? (
+                      <Text style={styles.adherenceFair}>
+                        ⚠️ Good progress, but there's room for improvement.
+                      </Text>
+                    ) : (
+                      <Text style={styles.adherencePoor}>
+                        ❌ Low adherence detected. Please try to take medications on schedule.
+                      </Text>
+                    )}
+                  </View>
+                </View>
+              </>
+            );
+          })()}
+        </View>
+
+        {/* Active Medications */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>💊 Active Medications ({medicines.length})</Text>
+          {medicines.length > 0 ? (
+            medicines.map((med) => <MedicineCard key={med.id} medicine={med} />)
+          ) : (
+            <View style={styles.emptyState}>
+              <Ionicons name="medical-outline" size={48} color="#ccc" />
+              <Text style={styles.emptyText}>No medications tracked yet</Text>
+              <Text style={styles.emptySubtext}>Add medications to generate insights</Text>
             </View>
-          </View>
-        )}
+          )}
+        </View>
 
         {/* AI Report Generation */}
         <View style={styles.section}>
@@ -156,94 +441,95 @@ const ReportsScreen = () => {
           <TouchableOpacity
             style={styles.generateButton}
             onPress={generateHealthReport}
-            disabled={isLoading}
+            disabled={isLoading || medicines.length === 0}
           >
             <LinearGradient
-              colors={isLoading ? ['#ccc', '#999'] : ['#9C27B0', '#7B1FA2']}
+              colors={isLoading || medicines.length === 0 ? ['#ccc', '#999'] : ['#4CAF50', '#388E3C']}
               style={styles.generateGradient}
             >
               {isLoading ? (
-                <ActivityIndicator size="small" color="white" />
+                <>
+                  <ActivityIndicator size="small" color="white" />
+                  <Text style={styles.generateText}>Analyzing with AI...</Text>
+                </>
               ) : (
-                <Ionicons name="sparkles" size={24} color="white" />
+                <>
+                  <Ionicons name="sparkles" size={24} color="white" />
+                  <Text style={styles.generateText}>Generate AI Health Report</Text>
+                </>
               )}
-              <Text style={styles.generateText}>
-                {isLoading ? 'Analyzing Your Health...' : 'Generate AI Health Report'}
-              </Text>
             </LinearGradient>
           </TouchableOpacity>
           
           <Text style={styles.generateSubtitle}>
-            Get personalized insights based on your medication history and feedback
+            Get personalized diet, exercise, and health recommendations based on your medications
           </Text>
         </View>
 
-        {/* Health Report */}
+        {/* AI Generated Report */}
         {healthReport && (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>📋 Your Health Report</Text>
-            
-            <View style={styles.reportCard}>
+          <>
+            {/* Main Report Section */}
+            <View style={styles.section}>
               <View style={styles.reportHeader}>
-                <Ionicons name="document-text" size={24} color="#2196F3" />
-                <Text style={styles.reportTitle}>AI Analysis</Text>
-                <TouchableOpacity
-                  onPress={handleSpeak}
-                  style={styles.speakButton}
-                >
-                  <Ionicons 
-                    name={isSpeaking ? "stop-circle" : "volume-high"} 
-                    size={20} 
-                    color="#9C27B0" 
-                  />
-                </TouchableOpacity>
+                <Ionicons name="document-text" size={24} color="#9C27B0" />
+                <Text style={styles.reportHeaderText}>AI Health Analysis</Text>
+                {healthReport.aiPowered && (
+                  <View style={styles.aiPoweredBadge}>
+                    <Ionicons name="sparkles" size={12} color="#FFD700" />
+                    <Text style={styles.aiPoweredText}>AI Powered</Text>
+                  </View>
+                )}
               </View>
-              
-              <Text style={styles.reportText}>{healthReport.report}</Text>
+
+              <View style={styles.reportCard}>
+                <ScrollView 
+                  style={styles.reportContent}
+                  nestedScrollEnabled={true}
+                  showsVerticalScrollIndicator={true}
+                >
+                  {healthReport.report ? (
+                    renderMarkdownReport(healthReport.report).mainReport
+                  ) : (
+                    <Text style={styles.paragraph}>No report content available</Text>
+                  )}
+                </ScrollView>
+              </View>
+
+              <Text style={styles.reportTimestamp}>
+                Generated: {new Date(healthReport.timestamp).toLocaleString()}
+              </Text>
             </View>
 
-            {/* Dietary Suggestions */}
-            {healthReport.dietarySuggestions && healthReport.dietarySuggestions.length > 0 && (
-              <View style={styles.dietarySection}>
-                <View style={styles.dietaryHeader}>
-                  <Ionicons name="restaurant" size={24} color="#4CAF50" />
-                  <Text style={styles.dietaryTitle}>Dietary Recommendations</Text>
+            {/* Suggestions Section */}
+            {renderMarkdownReport(healthReport.report).hasSuggestions && (
+              <View style={styles.section}>
+                <View style={styles.suggestionsHeader}>
+                  <Ionicons name="bulb" size={24} color="#FF9800" />
+                  <Text style={styles.suggestionsHeaderText}>
+                    💡 Personalized Suggestions
+                  </Text>
                 </View>
-                
-                {healthReport.dietarySuggestions.map((suggestion, index) => (
-                  <DietarySuggestionCard
-                    key={index}
-                    suggestion={suggestion}
-                    index={index}
-                  />
-                ))}
+
+                <View style={styles.suggestionsCard}>
+                  <ScrollView 
+                    style={styles.suggestionsContent}
+                    nestedScrollEnabled={true}
+                    showsVerticalScrollIndicator={true}
+                  >
+                    {renderMarkdownReport(healthReport.report).suggestions}
+                  </ScrollView>
+                </View>
+
+                <Text style={styles.suggestionsFooter}>
+                  💡 These suggestions are AI-generated based on your medication history
+                </Text>
               </View>
             )}
-          </View>
+          </>
         )}
 
-        {/* Tips Section */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>💡 Health Tips</Text>
-          <View style={styles.tipsCard}>
-            <View style={styles.tipItem}>
-              <Ionicons name="water" size={20} color="#2196F3" />
-              <Text style={styles.tipText}>Stay hydrated - drink 8 glasses of water daily</Text>
-            </View>
-            <View style={styles.tipItem}>
-              <Ionicons name="walk" size={20} color="#4CAF50" />
-              <Text style={styles.tipText}>Light exercise can improve medication effectiveness</Text>
-            </View>
-            <View style={styles.tipItem}>
-              <Ionicons name="time" size={20} color="#FF9800" />
-              <Text style={styles.tipText}>Take medications at consistent times each day</Text>
-            </View>
-            <View style={styles.tipItem}>
-              <Ionicons name="chatbubble" size={20} color="#9C27B0" />
-              <Text style={styles.tipText}>Share feedback to get better recommendations</Text>
-            </View>
-          </View>
-        </View>
+        <View style={{ height: 30 }} />
       </ScrollView>
     </SafeAreaView>
   );
@@ -252,7 +538,7 @@ const ReportsScreen = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f8f9fa',
+    backgroundColor: '#f5f5f5',
   },
   header: {
     padding: 20,
@@ -444,6 +730,341 @@ const styles = StyleSheet.create({
     marginLeft: 12,
     flex: 1,
     lineHeight: 20,
+  },
+  // New styles for medication tracking
+  overallStatsCard: {
+    backgroundColor: 'white',
+    borderRadius: 12,
+    padding: 16,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+  },
+  statRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    marginBottom: 12,
+  },
+  statBox: {
+    alignItems: 'center',
+    flex: 1,
+  },
+  statValue: {
+    fontSize: 32,
+    fontWeight: 'bold',
+    color: '#9C27B0',
+  },
+  statLabel: {
+    fontSize: 12,
+    color: '#666',
+    marginTop: 4,
+    textAlign: 'center',
+  },
+  medicineCard: {
+    backgroundColor: 'white',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+  },
+  medicineHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  medicineName: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#333',
+    marginLeft: 8,
+  },
+  medicineDetail: {
+    fontSize: 14,
+    color: '#666',
+    marginBottom: 4,
+  },
+  adherenceBar: {
+    marginTop: 12,
+  },
+  adherenceBarBg: {
+    height: 8,
+    backgroundColor: '#e0e0e0',
+    borderRadius: 4,
+    overflow: 'hidden',
+  },
+  adherenceBarFill: {
+    height: '100%',
+    backgroundColor: '#4CAF50',
+    borderRadius: 4,
+  },
+  adherenceText: {
+    fontSize: 12,
+    color: '#666',
+    marginTop: 4,
+    textAlign: 'center',
+  },
+  medicineStats: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    marginTop: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#f0f0f0',
+  },
+  statItem: {
+    fontSize: 13,
+    color: '#666',
+  },
+  emptyState: {
+    alignItems: 'center',
+    padding: 40,
+    backgroundColor: 'white',
+    borderRadius: 12,
+  },
+  emptyText: {
+    fontSize: 16,
+    color: '#666',
+    marginTop: 12,
+    fontWeight: '600',
+  },
+  emptySubtext: {
+    fontSize: 14,
+    color: '#999',
+    marginTop: 4,
+  },
+  reportHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  reportHeaderText: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#333',
+    marginLeft: 8,
+    flex: 1,
+  },
+  aiPoweredBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#9C27B0',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  aiPoweredText: {
+    color: 'white',
+    fontSize: 10,
+    fontWeight: 'bold',
+    marginLeft: 4,
+  },
+  reportCard: {
+    backgroundColor: 'white',
+    borderRadius: 12,
+    padding: 16,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    minHeight: 300,
+    maxHeight: 600,
+  },
+  reportContent: {
+    flex: 1,
+  },
+  heading1: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#333',
+    marginTop: 16,
+    marginBottom: 8,
+  },
+  heading2: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#444',
+    marginTop: 12,
+    marginBottom: 6,
+  },
+  heading3: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#555',
+    marginTop: 10,
+    marginBottom: 4,
+  },
+  paragraph: {
+    fontSize: 14,
+    color: '#666',
+    lineHeight: 22,
+    marginBottom: 8,
+  },
+  bold: {
+    fontWeight: 'bold',
+    color: '#333',
+  },
+  bulletPoint: {
+    fontSize: 14,
+    color: '#666',
+    lineHeight: 22,
+    marginBottom: 4,
+    marginLeft: 8,
+  },
+  numberedPoint: {
+    fontSize: 14,
+    color: '#666',
+    lineHeight: 22,
+    marginBottom: 4,
+    marginLeft: 8,
+  },
+  divider: {
+    height: 1,
+    backgroundColor: '#e0e0e0',
+    marginVertical: 16,
+  },
+  reportTimestamp: {
+    fontSize: 11,
+    color: '#999',
+    marginTop: 8,
+    textAlign: 'center',
+    fontStyle: 'italic',
+  },
+  // New styles for adherence breakdown
+  adherenceDetailCard: {
+    backgroundColor: 'white',
+    borderRadius: 12,
+    padding: 16,
+    marginTop: 12,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+  },
+  adherenceDetailTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#333',
+    marginBottom: 16,
+  },
+  adherenceDetailRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    marginBottom: 16,
+  },
+  adherenceDetailItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    paddingHorizontal: 8,
+  },
+  adherenceDetailText: {
+    marginLeft: 12,
+  },
+  adherenceDetailValue: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#333',
+  },
+  adherenceDetailLabel: {
+    fontSize: 12,
+    color: '#666',
+    fontWeight: '600',
+  },
+  adherenceDetailSubtext: {
+    fontSize: 10,
+    color: '#999',
+    fontStyle: 'italic',
+  },
+  onTimeRateContainer: {
+    marginTop: 8,
+    paddingTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: '#f0f0f0',
+  },
+  onTimeRateText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#333',
+    marginBottom: 8,
+  },
+  onTimeRateBar: {
+    height: 10,
+    backgroundColor: '#e0e0e0',
+    borderRadius: 5,
+    overflow: 'hidden',
+  },
+  onTimeRateFill: {
+    height: '100%',
+    backgroundColor: '#4CAF50',
+    borderRadius: 5,
+  },
+  adherenceInterpretation: {
+    marginTop: 16,
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: '#f8f9fa',
+  },
+  adherenceGood: {
+    fontSize: 14,
+    color: '#2E7D32',
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  adherenceFair: {
+    fontSize: 14,
+    color: '#F57C00',
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  adherencePoor: {
+    fontSize: 14,
+    color: '#C62828',
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  // Suggestions section styles
+  suggestionsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  suggestionsHeaderText: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#333',
+    marginLeft: 8,
+  },
+  suggestionsCard: {
+    backgroundColor: '#FFFBF0',
+    borderRadius: 12,
+    padding: 16,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    borderLeftWidth: 4,
+    borderLeftColor: '#FF9800',
+    minHeight: 200,
+    maxHeight: 400,
+  },
+  suggestionsContent: {
+    flex: 1,
+  },
+  suggestionsFooter: {
+    fontSize: 11,
+    color: '#999',
+    marginTop: 8,
+    textAlign: 'center',
+    fontStyle: 'italic',
   },
 });
 

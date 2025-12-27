@@ -16,12 +16,61 @@ import TTSService from '../services/TTSService';
 const MedicineTracker = ({ visible, onClose, reminder, onMedicationTaken }) => {
   const [isProcessing, setIsProcessing] = useState(false);
 
+  // Helper function to parse time string and check if scheduled time has passed
+  const canMarkAsTaken = () => {
+    if (!reminder || !reminder.time) return false;
+
+    const now = new Date();
+    
+    // Parse scheduled time from reminder (e.g., "02:30 PM")
+    const [timeStr, period] = reminder.time.split(' ');
+    const [hours, minutes] = timeStr.split(':').map(Number);
+    let scheduledHour = hours;
+    
+    if (period === 'PM' && hours !== 12) {
+      scheduledHour += 12;
+    } else if (period === 'AM' && hours === 12) {
+      scheduledHour = 0;
+    }
+
+    const scheduledTime = new Date();
+    scheduledTime.setHours(scheduledHour, minutes, 0, 0);
+
+    // Check if current time is past scheduled time
+    return now >= scheduledTime;
+  };
+
   const handleTakeMedicine = async () => {
     try {
+      // Check if scheduled time has passed
+      if (!canMarkAsTaken()) {
+        const [timeStr, period] = reminder.time.split(' ');
+        Alert.alert(
+          'Too Early! ⏰',
+          `You can only mark this medicine as taken after the scheduled time (${reminder.time}).\n\nThis ensures accurate medication tracking.`,
+          [{ text: 'Understood', style: 'default' }]
+        );
+        await TTSService.speak(`Please wait until ${reminder.time} to mark this medicine as taken.`);
+        return;
+      }
+
       setIsProcessing(true);
       
-      // Record medication as taken
-      await DataService.recordMedicationTaken(reminder.id, new Date().toISOString());
+      // Record medication as taken with scheduled time
+      const scheduledTimeISO = new Date();
+      const [timeStr, period] = reminder.time.split(' ');
+      const [hours, minutes] = timeStr.split(':').map(Number);
+      let scheduledHour = hours;
+      
+      if (period === 'PM' && hours !== 12) {
+        scheduledHour += 12;
+      } else if (period === 'AM' && hours === 12) {
+        scheduledHour = 0;
+      }
+      
+      scheduledTimeISO.setHours(scheduledHour, minutes, 0, 0);
+      
+      await DataService.recordMedicationTaken(reminder.id, scheduledTimeISO.toISOString());
       
       // Schedule feedback prompt for later
       await NotificationService.scheduleFeedbackPrompt(
@@ -146,14 +195,31 @@ const MedicineTracker = ({ visible, onClose, reminder, onMedicationTaken }) => {
 
           {/* Action Buttons */}
           <View style={styles.actionsContainer}>
+            {/* Time Status Indicator */}
+            {!canMarkAsTaken() && (
+              <View style={styles.timeWarning}>
+                <Ionicons name="time-outline" size={20} color="#FF9800" />
+                <Text style={styles.timeWarningText}>
+                  Wait until scheduled time to mark as taken
+                </Text>
+              </View>
+            )}
+            
             {/* Take Medicine Button */}
             <TouchableOpacity
-              style={styles.primaryButton}
+              style={[
+                styles.primaryButton,
+                !canMarkAsTaken() && styles.primaryButtonDisabled
+              ]}
               onPress={handleTakeMedicine}
-              disabled={isProcessing}
+              disabled={isProcessing || !canMarkAsTaken()}
             >
               <LinearGradient
-                colors={['#4CAF50', '#45A049']}
+                colors={
+                  !canMarkAsTaken() 
+                    ? ['#ccc', '#999'] 
+                    : ['#4CAF50', '#45A049']
+                }
                 style={styles.buttonGradient}
               >
                 <Ionicons name="checkmark-circle" size={24} color="white" />
@@ -279,6 +345,26 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.3,
     shadowRadius: 5,
     marginBottom: 20,
+  },
+  primaryButtonDisabled: {
+    opacity: 0.6,
+  },
+  timeWarning: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFF3E0',
+    padding: 12,
+    borderRadius: 10,
+    marginBottom: 15,
+    borderLeftWidth: 3,
+    borderLeftColor: '#FF9800',
+  },
+  timeWarningText: {
+    marginLeft: 8,
+    fontSize: 13,
+    color: '#E65100',
+    fontWeight: '600',
+    flex: 1,
   },
   buttonGradient: {
     paddingVertical: 18,
