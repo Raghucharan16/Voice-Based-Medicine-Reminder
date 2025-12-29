@@ -130,6 +130,62 @@ class DataService {
     }
   }
 
+  // Record late taken medication (after 15 min buffer)
+  static async recordMedicationLateTaken(medicationId, scheduledTime, actualTime = null) {
+    try {
+      const history = await this.getMedicationHistory();
+      const actualTakenTime = actualTime || new Date().toISOString();
+      
+      // Prevent duplicate late records for same medication at same scheduled time
+      const scheduledDate = new Date(scheduledTime);
+      const scheduledDateStr = scheduledDate.toDateString();
+      
+      const alreadyRecorded = history.find(h => {
+        if (h.medicationId !== medicationId || h.status !== 'late_taken') return false;
+        
+        const hScheduledDate = new Date(h.scheduledTime);
+        const hScheduledDateStr = hScheduledDate.toDateString();
+        
+        if (hScheduledDateStr !== scheduledDateStr) return false;
+        
+        const timeDiff = Math.abs(hScheduledDate - scheduledDate) / (1000 * 60);
+        return timeDiff < 30;
+      });
+      
+      if (alreadyRecorded) {
+        console.log('⚠️ Medication already recorded as late taken for this scheduled time:', {
+          medicationId,
+          scheduledTime,
+          existingRecord: alreadyRecorded.id
+        });
+        return alreadyRecorded;
+      }
+      
+      const record = {
+        id: Date.now().toString(),
+        medicationId,
+        scheduledTime: scheduledTime,
+        actualTime: actualTakenTime,
+        status: 'late_taken',
+        delay: this.calculateDelay(scheduledTime, actualTakenTime)
+      };
+      
+      console.log('✅ Recording medication late taken:', {
+        medicationId,
+        scheduledTime,
+        actualTime: actualTakenTime,
+        delay: record.delay
+      });
+      
+      history.push(record);
+      await AsyncStorage.setItem(this.KEYS.MEDICATION_HISTORY, JSON.stringify(history));
+      return record;
+    } catch (error) {
+      console.error('Error recording medication late taken:', error);
+      throw error;
+    }
+  }
+
   // Record missed medication
   static async recordMedicationMissed(medicationId, scheduledTime, actualTime = null) {
     try {

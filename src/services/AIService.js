@@ -670,17 +670,19 @@ class AIService {
   generateBasicReport(medicationHistory, feedbackHistory) {
     const totalMeds = medicationHistory.length;
     const taken = medicationHistory.filter(m => m.status === 'taken').length;
+    const lateTaken = medicationHistory.filter(m => m.status === 'late_taken').length;
     const missed = medicationHistory.filter(m => m.status === 'missed').length;
-    const adherenceRate = totalMeds > 0 ? Math.round((taken / totalMeds) * 100) : 0;
+    const adherenceRate = totalMeds > 0 ? Math.round(((taken + lateTaken) / totalMeds) * 100) : 0;
     
     // Group by medicine
     const medicineGroups = {};
     medicationHistory.forEach(med => {
       const name = med.medicine || 'Unknown';
       if (!medicineGroups[name]) {
-        medicineGroups[name] = { taken: 0, missed: 0, dosage: med.dosage, frequency: med.frequency };
+        medicineGroups[name] = { taken: 0, lateTaken: 0, missed: 0, dosage: med.dosage, frequency: med.frequency };
       }
       if (med.status === 'taken') medicineGroups[name].taken++;
+      if (med.status === 'late_taken') medicineGroups[name].lateTaken++;
       if (med.status === 'missed') medicineGroups[name].missed++;
     });
 
@@ -691,7 +693,8 @@ class AIService {
     // Overview
     report += `## 💊 Medication Overview\n\n`;
     report += `- **Overall Adherence:** ${adherenceRate}% ${this.getAdherenceEmoji(adherenceRate)}\n`;
-    report += `- **Doses Taken:** ${taken} ✅\n`;
+    report += `- **Doses Taken On Time:** ${taken} ✅\n`;
+    report += `- **Doses Taken Late:** ${lateTaken} ⏱️\n`;
     report += `- **Doses Missed:** ${missed} ❌\n`;
     report += `- **Total Scheduled:** ${totalMeds}\n`;
     report += `- **Feedback Entries:** ${feedbackHistory?.length || 0} 💬\n\n`;
@@ -699,12 +702,12 @@ class AIService {
     // Individual medicines
     report += `## 📋 Your Medications\n\n`;
     Object.entries(medicineGroups).forEach(([name, data]) => {
-      const medTotal = data.taken + data.missed;
-      const medAdherence = medTotal > 0 ? Math.round((data.taken / medTotal) * 100) : 0;
+      const medTotal = data.taken + data.lateTaken + data.missed;
+      const medAdherence = medTotal > 0 ? Math.round(((data.taken + data.lateTaken) / medTotal) * 100) : 0;
       report += `### ${name}\n`;
       report += `- **Dosage:** ${data.dosage || 'As prescribed'}\n`;
       report += `- **Frequency:** ${data.frequency || 'Daily'}\n`;
-      report += `- **Adherence:** ${medAdherence}% (${data.taken} taken, ${data.missed} missed)\n\n`;
+      report += `- **Adherence:** ${medAdherence}% (${data.taken} on-time, ${data.lateTaken} late, ${data.missed} missed)\n\n`;
     });
     
     // Feedback section (if available)
@@ -817,12 +820,14 @@ class AIService {
   calculateBasicStats(medicationHistory) {
     const totalReminders = medicationHistory.length;
     const taken = medicationHistory.filter(m => m.status === 'taken').length;
+    const lateTaken = medicationHistory.filter(m => m.status === 'late_taken').length;
     const missed = medicationHistory.filter(m => m.status === 'missed').length;
-    const adherenceRate = totalReminders > 0 ? Math.round((taken / totalReminders) * 100) : 0;
+    const adherenceRate = totalReminders > 0 ? Math.round(((taken + lateTaken) / totalReminders) * 100) : 0;
 
     return {
       totalReminders,
       taken,
+      lateTaken,
       missed,
       adherenceRate,
     };

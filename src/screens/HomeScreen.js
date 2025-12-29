@@ -74,11 +74,22 @@ const HomeScreen = () => {
 
   const loadTodayStats = async () => {
     try {
-      const stats = await DataService.getAdherenceStats(1); // Today only
+      const history = await DataService.getMedicationHistory();
+      const today = new Date().toDateString();
+      const todayHistory = history.filter(h => 
+        new Date(h.actualTime || h.scheduledTime).toDateString() === today
+      );
+      
+      const taken = todayHistory.filter(h => 
+        h.status === 'taken' || h.status === 'late_taken'
+      ).length;
+      const scheduled = todayHistory.length;
+      const pending = Math.max(0, scheduled - taken);
+      
       setTodayStats({
-        medicines: await getTodayRemindersCount(),
-        taken: stats.takenOnTime + stats.takenLate,
-        pending: Math.max(0, await getTodayRemindersCount() - stats.takenOnTime - stats.takenLate)
+        medicines: scheduled,
+        taken: taken,
+        pending: pending
       });
     } catch (error) {
       console.warn('Error loading stats:', error);

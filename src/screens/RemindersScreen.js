@@ -64,7 +64,6 @@ const RemindersScreen = () => {
 
   const markMedicationTaken = async (reminder) => {
     try {
-      // Parse scheduled time and check if it has passed
       const now = new Date();
       const [timeStr, period] = reminder.time.split(' ');
       const [hours, minutes] = timeStr.split(':').map(Number);
@@ -90,7 +89,52 @@ const RemindersScreen = () => {
         return;
       }
 
-      // Record with scheduled time (IST system time)
+      // Calculate delay in minutes
+      const delayMinutes = Math.floor((now - scheduledTime) / (1000 * 60));
+      const LATE_BUFFER = 15; // 15 minutes buffer
+
+      // Check if medication is being marked after buffer time (late)
+      if (delayMinutes > LATE_BUFFER) {
+        Alert.alert(
+          'Late Medication ⏱️',
+          `The scheduled time was ${reminder.time} (${delayMinutes} minutes ago).\n\nSince this is more than ${LATE_BUFFER} minutes late, it will be recorded as "Late Taken" and marked as not taken for today's adherence.`,
+          [
+            {
+              text: 'Record as Late Taken',
+              onPress: async () => {
+                try {
+                  // Record as late taken instead of on-time taken
+                  await DataService.recordMedicationLateTaken(reminder.id, scheduledTime.toISOString());
+                  await NotificationService.scheduleFeedbackPrompt(
+                    reminder.id,
+                    reminder.medicine,
+                    60
+                  );
+                  
+                  Alert.alert(
+                    'Late Medication Recorded ⏱️',
+                    `Your ${reminder.medicine} has been recorded as late taken. This will be reflected in your reports to help track adherence patterns.`,
+                    [{ text: 'OK', style: 'default' }]
+                  );
+                  
+                  await TTSService.speak(`Your ${reminder.medicine} has been recorded as late taken.`);
+                } catch (error) {
+                  console.error('Error recording late medication:', error);
+                  Alert.alert('Error', 'Failed to record late medication: ' + error.message);
+                }
+              },
+              style: 'default'
+            },
+            {
+              text: 'Cancel',
+              style: 'cancel'
+            }
+          ]
+        );
+        return;
+      }
+
+      // Record as taken normally (within buffer time)
       await DataService.recordMedicationTaken(reminder.id, scheduledTime.toISOString());
       await NotificationService.scheduleFeedbackPrompt(
         reminder.id,

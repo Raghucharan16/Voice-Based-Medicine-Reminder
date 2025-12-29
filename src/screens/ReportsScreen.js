@@ -119,26 +119,28 @@ const ReportsScreen = () => {
   };
 
   const getAdherenceBreakdown = () => {
-    const total = medicationHistory.length;
-    const taken = medicationHistory.filter(h => h.status === 'taken').length;
-    const missed = medicationHistory.filter(h => h.status === 'missed').length;
-    
-    // Calculate on-time vs late
     const takenOnTime = medicationHistory.filter(h => 
       h.status === 'taken' && h.delay <= 15
     ).length;
     const takenLate = medicationHistory.filter(h => 
       h.status === 'taken' && h.delay > 15
     ).length;
+    const lateTaken = medicationHistory.filter(h => h.status === 'late_taken').length;
+    const missed = medicationHistory.filter(h => h.status === 'missed').length;
+    
+    // Total scheduled is sum of all outcomes
+    const total = takenOnTime + takenLate + lateTaken + missed;
+    const taken = takenOnTime + takenLate; // Total doses taken (on-time + late)
 
     return {
       total,
       taken,
       missed,
+      lateTaken,
       takenOnTime,
       takenLate,
-      adherenceRate: total > 0 ? Math.round((taken / total) * 100) : 0,
-      onTimeRate: taken > 0 ? Math.round((takenOnTime / taken) * 100) : 0,
+      adherenceRate: total > 0 ? Math.round(((taken + lateTaken) / total) * 100) : 0,
+      onTimeRate: (taken + takenLate) > 0 ? Math.round((takenOnTime / (taken + takenLate)) * 100) : 0,
     };
   };
 
@@ -251,9 +253,10 @@ const ReportsScreen = () => {
   const MedicineCard = ({ medicine }) => {
     const medHistory = medicationHistory.filter(h => h.medicationId === medicine.id);
     const taken = medHistory.filter(h => h.status === 'taken').length;
+    const lateTaken = medHistory.filter(h => h.status === 'late_taken').length;
     const missed = medHistory.filter(h => h.status === 'missed').length;
-    const total = taken + missed;
-    const adherence = total > 0 ? Math.round((taken / total) * 100) : 0;
+    const total = taken + lateTaken + missed;
+    const adherence = total > 0 ? Math.round(((taken + lateTaken) / total) * 100) : 0;
 
     return (
       <View style={styles.medicineCard}>
@@ -274,6 +277,7 @@ const ReportsScreen = () => {
         
         <View style={styles.medicineStats}>
           <Text style={styles.statItem}>✅ Taken: {taken}</Text>
+          {lateTaken > 0 && <Text style={styles.statItem}>⏱️ Late Taken: {lateTaken}</Text>}
           <Text style={styles.statItem}>❌ Missed: {missed}</Text>
         </View>
       </View>
@@ -382,6 +386,41 @@ const ReportsScreen = () => {
                       </View>
                     </View>
                   </View>
+
+                  {breakdown.lateTaken > 0 && (
+                    <View style={styles.adherenceDetailRow}>
+                      <View style={styles.adherenceDetailItem}>
+                        <Ionicons name="alert-circle" size={24} color="#FF6F00" />
+                        <View style={styles.adherenceDetailText}>
+                          <Text style={styles.adherenceDetailValue}>{breakdown.lateTaken}</Text>
+                          <Text style={styles.adherenceDetailLabel}>Late Taken</Text>
+                          <Text style={styles.adherenceDetailSubtext}>(>15 min delayed)</Text>
+                        </View>
+                      </View>
+                      
+                      <View style={styles.adherenceDetailItem}>
+                        <Ionicons name="close-circle" size={24} color="#F44336" />
+                        <View style={styles.adherenceDetailText}>
+                          <Text style={styles.adherenceDetailValue}>{breakdown.missed}</Text>
+                          <Text style={styles.adherenceDetailLabel}>Missed</Text>
+                          <Text style={styles.adherenceDetailSubtext}>(not taken)</Text>
+                        </View>
+                      </View>
+                    </View>
+                  )}
+
+                  {breakdown.lateTaken === 0 && (
+                    <View style={styles.adherenceDetailRow}>
+                      <View style={styles.adherenceDetailItem}>
+                        <Ionicons name="close-circle" size={24} color="#F44336" />
+                        <View style={styles.adherenceDetailText}>
+                          <Text style={styles.adherenceDetailValue}>{breakdown.missed}</Text>
+                          <Text style={styles.adherenceDetailLabel}>Missed</Text>
+                          <Text style={styles.adherenceDetailSubtext}>(not taken)</Text>
+                        </View>
+                      </View>
+                    </View>
+                  )}
 
                   {breakdown.taken > 0 && (
                     <View style={styles.onTimeRateContainer}>
