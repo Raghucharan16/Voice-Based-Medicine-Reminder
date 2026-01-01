@@ -373,20 +373,21 @@ class DataService {
       cutoffDate.setDate(cutoffDate.getDate() - days);
       
       const recentHistory = history.filter(record => 
-        new Date(record.actualTime) >= cutoffDate
+        new Date(record.actualTime || record.scheduledTime) >= cutoffDate
       );
       
-      const totalReminders = recentHistory.length;
-      const takenOnTime = recentHistory.filter(record => record.delay <= 15).length; // Within 15 minutes
-      const takenLate = recentHistory.filter(record => record.delay > 15 && record.delay <= 60).length;
-      const missedCount = await this.getMissedCount(days);
+      const takenOnTime = recentHistory.filter(record => record.delay <= 15 && (record.status === 'taken' || record.status === 'late_taken')).length; // Within 15 minutes
+      const takenLate = recentHistory.filter(record => record.delay > 15 && (record.status === 'taken' || record.status === 'late_taken')).length;
+      const missed = await this.getMissedCount(days);
       
+      const totalScheduled = takenOnTime + takenLate + missed;
+
       return {
-        totalReminders,
+        totalReminders: totalScheduled,
         takenOnTime,
         takenLate,
-        missed: missedCount,
-        adherenceRate: totalReminders > 0 ? Math.round((takenOnTime / totalReminders) * 100) : 0,
+        missed,
+        adherenceRate: totalScheduled > 0 ? Math.round(((takenOnTime + takenLate) / totalScheduled) * 100) : 0,
         averageDelay: recentHistory.length > 0 
           ? Math.round(recentHistory.reduce((sum, r) => sum + r.delay, 0) / recentHistory.length)
           : 0
@@ -408,17 +409,21 @@ class DataService {
     try {
       const reminders = await this.getReminders();
       const history = await this.getMedicationHistory();
-      const cutoffDate = new Date();
-      cutoffDate.setDate(cutoffDate.getDate() - days);
       
-      // This is a simplified calculation - in a real app, you'd track missed reminders more accurately
       const activeReminders = reminders.filter(r => r.status === 'active');
-      const expectedCount = activeReminders.length * days; // Simplified assumption
-      const actualCount = history.filter(record => 
-        new Date(record.actualTime) >= cutoffDate
-      ).length;
       
-      return Math.max(0, expectedCount - actualCount);
+      let expectedDoses = 0;
+      activeReminders.forEach(reminder => {
+        // Simplified: assuming daily for all active reminders for this calculation
+        expectedDoses += days; 
+      });
+
+      const takenDoses = history.filter(h => 
+        (h.status === 'taken' || h.status === 'late_taken')
+        && new Date(h.actualTime || h.scheduledTime) >= new Date(new Date().setDate(new Date().getDate() - days))
+      ).length;
+
+      return Math.max(0, expectedDoses - takenDoses);
     } catch (error) {
       console.error('Error calculating missed count:', error);
       return 0;
