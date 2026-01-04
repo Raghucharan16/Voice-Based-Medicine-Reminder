@@ -173,6 +173,102 @@ class EmailService {
       throw error;
     }
   }
+
+  /**
+   * Send email alert for missed medication
+   * @param {Array<Object>} caregivers - Array of caregiver objects
+   * @param {string} patientName - Patient's name
+   * @param {string} medicineName - Name of the missed medicine
+   * @param {string} scheduledTime - Scheduled time for the medicine
+   * @param {string} missedDate - Date when the medicine was missed
+   */
+  async sendMissedMedicationEmail(caregivers, patientName, medicineName, scheduledTime, missedDate) {
+    try {
+      const recipientEmails = caregivers.map(c => c.email);
+      if (recipientEmails.length === 0) {
+        console.log('No caregivers with emails found for missed medication alert.');
+        return { success: false, message: 'No caregivers with emails.' };
+      }
+
+      const response = await fetch(`${this.SERVER_URL}/send-email`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          to: recipientEmails,
+          subject: `Urgent: ${patientName} Missed Medication - ${medicineName}`,
+          text: `Dear Caregiver,
+
+This is an urgent notification. ${patientName} appears to have missed their ${medicineName} medication, which was scheduled for ${scheduledTime} on ${missedDate}.
+
+Please check in with ${patientName} as soon as possible.
+
+Thank you,
+Your Medicine Reminder App`,
+          html: `
+            <p>Dear Caregiver,</p>
+            <p>This is an urgent notification. <strong>${patientName}</strong> appears to have missed their <strong>${medicineName}</strong> medication, which was scheduled for ${scheduledTime} on ${missedDate}.</p>
+            <p>Please check in with ${patientName} as soon as possible.</p>
+            <p>Thank you,<br/>Your Medicine Reminder App</p>
+          `,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.message || 'Failed to send email');
+      }
+      return { success: true, message: 'Missed medication email sent successfully.', notified: recipientEmails.length };
+    } catch (error) {
+      console.error('Error sending missed medication email:', error);
+      return { success: false, message: error.message };
+    }
+  }
+
+  /**
+   * Send late medication alert to caregiver
+   * @param {Array<Object>} caregivers - Array of caregiver objects with name and email
+   * @param {string} patientName - Patient's name
+   * @param {string} medicineName - Name of late medicine
+   * @param {number} delayMinutes - Delay in minutes
+   */
+  async sendLateMedicationEmail(caregivers, patientName, medicineName, delayMinutes) {
+    try {
+      const recipientEmails = caregivers.map(c => c.email);
+      if (recipientEmails.length === 0) {
+        console.log('No caregivers with emails found for late medication alert.');
+        return { success: false, message: 'No caregivers with emails.' };
+      }
+
+      const response = await fetch(`${this.SERVER_URL}/send-email`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          to: recipientEmails,
+          subject: `Alert: ${patientName} Took Medication Late - ${medicineName}`,
+          text: `Dear Caregiver,
+
+This is an alert to inform you that ${patientName} took their ${medicineName} medication ${delayMinutes} minutes late.
+
+Thank you,
+Your Medicine Reminder App`,
+          html: `
+            <p>Dear Caregiver,</p>
+            <p>This is an alert to inform you that <strong>${patientName}</strong> took their <strong>${medicineName}</strong> medication <strong>${delayMinutes} minutes late</strong>.</p>
+            <p>Thank you,<br/>Your Medicine Reminder App</p>
+          `,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.message || 'Failed to send email');
+      }
+      return { success: true, message: 'Late medication email sent successfully.', notified: recipientEmails.length };
+    } catch (error) {
+      console.error('Error sending late medication email:', error);
+      return { success: false, message: error.message };
+    }
+  }
 }
 
 const emailService = new EmailService();

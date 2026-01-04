@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import EmailService from './EmailService'; // Import EmailService
 
 class DataService {
   // Storage keys
@@ -71,29 +72,26 @@ class DataService {
   }
 
   // Medication History
+  static LATE_TAKEN_GRACE_PERIOD_MINUTES = 15;
+
   static async recordMedicationTaken(medicationId, scheduledTime, actualTime = null) {
     try {
       const history = await this.getMedicationHistory();
       const actualTakenTime = actualTime || new Date().toISOString();
       
-      // Enhanced duplicate check: prevent multiple records for same medication on same scheduled time
-      // Check within a 30-minute window of the scheduled time to handle late taking within threshold
       const scheduledDate = new Date(scheduledTime);
       const scheduledDateStr = scheduledDate.toDateString();
       
-      // Find existing record for this medication on this scheduled date/time
       const alreadyRecorded = history.find(h => {
-        if (h.medicationId !== medicationId || h.status !== 'taken') return false;
+        if (h.medicationId !== medicationId) return false;
         
         const hScheduledDate = new Date(h.scheduledTime);
         const hScheduledDateStr = hScheduledDate.toDateString();
         
-        // Check if it's the same date and within 30 min of scheduled time
         if (hScheduledDateStr !== scheduledDateStr) return false;
         
-        // Check if scheduled times are within 30 minutes of each other (same dose)
         const timeDiff = Math.abs(hScheduledDate - scheduledDate) / (1000 * 60);
-        return timeDiff < 30;
+        return timeDiff < 30; // Check within 30 minutes for same dose
       });
       
       if (alreadyRecorded) {
@@ -102,19 +100,22 @@ class DataService {
           scheduledTime,
           existingRecord: alreadyRecorded.id
         });
-        return alreadyRecorded; // Return existing record, don't create duplicate
+        return alreadyRecorded;
       }
       
+      const delay = this.calculateDelay(scheduledTime, actualTakenTime);
+      const status = delay > this.LATE_TAKEN_GRACE_PERIOD_MINUTES ? 'late_taken' : 'taken';
+
       const record = {
         id: Date.now().toString(),
         medicationId,
-        scheduledTime: scheduledTime, // When it was supposed to be taken
-        actualTime: actualTakenTime,  // When it was actually taken (system time in IST)
-        status: 'taken',
-        delay: this.calculateDelay(scheduledTime, actualTakenTime)
+        scheduledTime: scheduledTime,
+        actualTime: actualTakenTime,
+        status,
+        delay
       };
       
-      console.log('✅ Recording new medication taken:', {
+      console.log(`✅ Recording medication (${status}):`, {
         medicationId,
         scheduledTime,
         actualTime: actualTakenTime,
@@ -123,6 +124,22 @@ class DataService {
       
       history.push(record);
       await AsyncStorage.setItem(this.KEYS.MEDICATION_HISTORY, JSON.stringify(history));
+
+      if (status === 'late_taken') {
+        const reminder = await this.getReminderById(medicationId);
+        const caregivers = await this.getCaretakers();
+        if (reminder && caregivers.length > 0) {
+          const patientName = await AsyncStorage.getItem('userName') || 'Patient';
+          const emailResult = await EmailService.sendLateMedicationEmail(
+            caregivers,
+            patientName,
+            reminder.medicine,
+            delay
+          );
+          console.log('📧 Caregiver late medication alert sent:', emailResult);
+        }
+      }
+
       return record;
     } catch (error) {
       console.error('Error recording medication taken:', error);
@@ -130,61 +147,7 @@ class DataService {
     }
   }
 
-  // Record late taken medication (after 15 min buffer)
-  static async recordMedicationLateTaken(medicationId, scheduledTime, actualTime = null) {
-    try {
-      const history = await this.getMedicationHistory();
-      const actualTakenTime = actualTime || new Date().toISOString();
-      
-      // Prevent duplicate late records for same medication at same scheduled time
-      const scheduledDate = new Date(scheduledTime);
-      const scheduledDateStr = scheduledDate.toDateString();
-      
-      const alreadyRecorded = history.find(h => {
-        if (h.medicationId !== medicationId || h.status !== 'late_taken') return false;
-        
-        const hScheduledDate = new Date(h.scheduledTime);
-        const hScheduledDateStr = hScheduledDate.toDateString();
-        
-        if (hScheduledDateStr !== scheduledDateStr) return false;
-        
-        const timeDiff = Math.abs(hScheduledDate - scheduledDate) / (1000 * 60);
-        return timeDiff < 30;
-      });
-      
-      if (alreadyRecorded) {
-        console.log('⚠️ Medication already recorded as late taken for this scheduled time:', {
-          medicationId,
-          scheduledTime,
-          existingRecord: alreadyRecorded.id
-        });
-        return alreadyRecorded;
-      }
-      
-      const record = {
-        id: Date.now().toString(),
-        medicationId,
-        scheduledTime: scheduledTime,
-        actualTime: actualTakenTime,
-        status: 'late_taken',
-        delay: this.calculateDelay(scheduledTime, actualTakenTime)
-      };
-      
-      console.log('✅ Recording medication late taken:', {
-        medicationId,
-        scheduledTime,
-        actualTime: actualTakenTime,
-        delay: record.delay
-      });
-      
-      history.push(record);
-      await AsyncStorage.setItem(this.KEYS.MEDICATION_HISTORY, JSON.stringify(history));
-      return record;
-    } catch (error) {
-      console.error('Error recording medication late taken:', error);
-      throw error;
-    }
-  }
+  // ...existing code...
 
   // Record missed medication
   static async recordMedicationMissed(medicationId, scheduledTime, actualTime = null) {
@@ -372,24 +335,26 @@ class DataService {
       const cutoffDate = new Date();
       cutoffDate.setDate(cutoffDate.getDate() - days);
       
-      const recentHistory = history.filter(record => 
+      const recentTakenHistory = history.filter(record => 
+        (record.status === 'taken' || record.status === 'late_taken') &&
         new Date(record.actualTime || record.scheduledTime) >= cutoffDate
       );
       
-      const takenOnTime = recentHistory.filter(record => record.delay <= 15 && (record.status === 'taken' || record.status === 'late_taken')).length; // Within 15 minutes
-      const takenLate = recentHistory.filter(record => record.delay > 15 && (record.status === 'taken' || record.status === 'late_taken')).length;
-      const missed = await this.getMissedCount(days);
-      
-      const totalScheduled = takenOnTime + takenLate + missed;
+      const totalScheduled = await this.getScheduledDosesForPeriod(days);
+      const taken = recentTakenHistory.length;
+      const missed = Math.max(0, totalScheduled - taken);
+
+      const takenOnTime = recentTakenHistory.filter(record => record.delay <= 15).length; 
+      const takenLate = recentTakenHistory.filter(record => record.delay > 15).length;
 
       return {
         totalReminders: totalScheduled,
         takenOnTime,
         takenLate,
         missed,
-        adherenceRate: totalScheduled > 0 ? Math.round(((takenOnTime + takenLate) / totalScheduled) * 100) : 0,
-        averageDelay: recentHistory.length > 0 
-          ? Math.round(recentHistory.reduce((sum, r) => sum + r.delay, 0) / recentHistory.length)
+        adherenceRate: totalScheduled > 0 ? Math.round((taken / totalScheduled) * 100) : 0,
+        averageDelay: recentTakenHistory.length > 0 
+          ? Math.round(recentTakenHistory.reduce((sum, r) => sum + r.delay, 0) / recentTakenHistory.length)
           : 0
       };
     } catch (error) {
@@ -407,27 +372,39 @@ class DataService {
 
   static async getMissedCount(days = 30) {
     try {
-      const reminders = await this.getReminders();
+      const totalScheduled = await this.getScheduledDosesForPeriod(days);
       const history = await this.getMedicationHistory();
-      
-      const activeReminders = reminders.filter(r => r.status === 'active');
-      
-      let expectedDoses = 0;
-      activeReminders.forEach(reminder => {
-        // Simplified: assuming daily for all active reminders for this calculation
-        expectedDoses += days; 
-      });
+      const cutoffDate = new Date();
+      cutoffDate.setDate(cutoffDate.getDate() - days);
 
       const takenDoses = history.filter(h => 
         (h.status === 'taken' || h.status === 'late_taken')
-        && new Date(h.actualTime || h.scheduledTime) >= new Date(new Date().setDate(new Date().getDate() - days))
+        && new Date(h.actualTime || h.scheduledTime) >= cutoffDate
       ).length;
 
-      return Math.max(0, expectedDoses - takenDoses);
+      return Math.max(0, totalScheduled - takenDoses);
     } catch (error) {
       console.error('Error calculating missed count:', error);
       return 0;
     }
+  }
+
+  static async getScheduledDosesForPeriod(days = 30) {
+    const reminders = await this.getReminders();
+    const now = new Date();
+    const startDate = new Date();
+    startDate.setDate(now.getDate() - days);
+
+    let scheduledCount = 0;
+
+    for (const reminder of reminders) {
+      if (reminder.status !== 'active') continue;
+
+      // Simple daily frequency assumption for now
+      // In a real app, this would be more complex, checking exact schedules
+      scheduledCount += days; 
+    }
+    return scheduledCount;
   }
 
   // Utility functions
