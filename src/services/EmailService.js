@@ -269,6 +269,64 @@ Your Medicine Reminder App`,
       return { success: false, message: error.message };
     }
   }
+
+  /**
+   * Send daily report email to caregiver
+   * @param {Array<Object>} caregivers - Array of caregiver objects with name and email
+   * @param {string} patientName - Patient's name
+   * @param {string} reportDate - Date of the report
+   * @param {number} scheduledDoses - Total scheduled doses
+   * @param {number} takenDoses - Total taken doses
+   * @param {number} lateDoses - Total late doses
+   * @param {number} missedDoses - Total missed doses
+   * @param {number} adherencePercentage - Adherence percentage
+   */
+  async sendDailyReportEmail(caregivers, patientName, reportDate, scheduledDoses, takenDoses, lateDoses, missedDoses, adherencePercentage) {
+    try {
+      const recipientEmails = caregivers.map(c => c.email);
+      if (recipientEmails.length === 0) {
+        console.log('No caregivers with emails found for daily report.');
+        return { success: false, message: 'No caregivers with emails.' };
+      }
+
+      const response = await fetch(`${this.SERVER_URL}/send-email`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          to: recipientEmails,
+          subject: `Daily Medication Report for ${patientName} - ${reportDate}`,
+          text: `Dear Caregiver,
+
+Here is the daily medication adherence report for ${patientName} for ${reportDate}:
+
+Summary:
+- Scheduled Doses: ${scheduledDoses}
+- Taken Doses (on time): ${takenDoses}
+- Taken Doses (late): ${lateDoses}
+- Missed Doses: ${missedDoses}
+
+Overall Adherence: ${adherencePercentage}%
+
+For a detailed view, please check the app.
+
+Sincerely,
+Your Medicine Reminder App`,
+        }),
+        timeout: 15000,
+      });
+
+      if (!response.ok) {
+        throw new Error(`Email service error: ${response.status}`);
+      }
+      const result = await response.json();
+      console.log('✅ Daily report email sent successfully:', result);
+      return { success: true, notified: recipientEmails.length, result };
+
+    } catch (error) {
+      console.error('❌ Daily report email failed:', error);
+      throw error;
+    }
+  }
 }
 
 const emailService = new EmailService();

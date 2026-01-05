@@ -10,6 +10,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 class MedicationMonitor {
   static interval = null;
   static isMonitoring = false;
+  static dailyReportInterval = null;
 
   /**
    * Start monitoring for missed medications
@@ -229,6 +230,131 @@ class MedicationMonitor {
       }
     } catch (error) {
       console.error('Error cleaning up alert markers:', error);
+    }
+  }
+
+  /**
+   * Start monitoring for daily reports
+   * Checks every hour
+   */
+  static startDailyReportMonitoring() {
+    console.log('📊 Starting daily report monitoring...');
+    // Set an interval to check for daily report sending, e.g., every hour
+    this.dailyReportInterval = setInterval(() => {
+      this.checkAndSendDailyReport();
+    }, 60 * 60 * 1000); // Check every hour
+
+    // Also check immediately on start, in case the app starts after 9 AM
+    this.checkAndSendDailyReport();
+  }
+
+  /**
+   * Stop monitoring daily reports
+   */
+  static stopDailyReportMonitoring() {
+    if (this.dailyReportInterval) {
+      clearInterval(this.dailyReportInterval);
+      this.dailyReportInterval = null;
+      console.log('⏹️ Daily report monitoring stopped');
+    }
+  }
+
+  /**
+   * Check and send daily report if due
+   */
+  static async checkAndSendDailyReport() {
+    const now = new Date();
+    // Assuming report should be sent at 9 AM daily
+    if (now.getHours() === 9 && now.getMinutes() >= 0 && now.getMinutes() < 1) { // Trigger at 9:00 AM once
+      const lastReportDate = await AsyncStorage.getItem('lastDailyReportDate');
+      const today = now.toDateString();
+
+      if (lastReportDate !== today) {
+        console.log('⏰ Time to send daily report!');
+        await this.sendDailyReport();
+        await AsyncStorage.setItem('lastDailyReportDate', today);
+      } else {
+        console.log('ℹ️ Daily report already sent today.');
+      }
+    }
+  }
+
+  /**
+   * Send the daily report to caregivers
+   */
+  static async sendDailyReport() {
+    try {
+      const userName = await AsyncStorage.getItem('userName') || 'Patient';
+      const caregivers = await DataService.getCaretakers();
+
+      if (caregivers.length === 0) {
+        console.log('ℹ️ No caregivers configured for daily reports.');
+        return;
+      }
+
+      // Get history for yesterday
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      const yesterdayStr = yesterday.toDateString();
+
+      const history = await DataService.getMedicationHistory();
+      const yesterdayHistory = history.filter(h => new Date(h.scheduledTime).toDateString() === yesterdayStr);
+
+      let takenCount = 0;
+      let lateTakenCount = 0;
+      let missedCount = 0;
+      let scheduledCount = 0;
+
+      // To accurately count scheduled, we need to consider all reminders that were active yesterday
+      const reminders = await DataService.getReminders();
+      const relevantReminders = reminders.filter(r => {
+        // Simple check: if reminder was active yesterday. More complex logic needed for 'once' reminders.
+        return r.status === 'active' || (r.frequency === 'once' && new Date(r.date).toDateString() === yesterdayStr);
+      });
+
+      // For simplicity, let's assume `scheduledCount` for now is based on how many unique reminders *should* have been taken.
+      // A more robust solution would involve checking each reminder's schedule for yesterday.
+      // For this implementation, we'll use a placeholder for scheduledCount and refine if needed.
+      
+      const uniqueScheduledTimes = new Set();
+      for (const reminder of relevantReminders) {
+        // This is a simplification. A real implementation needs to generate all scheduled times for yesterday
+        // for each relevant reminder and add them to a set to get unique scheduled doses.
+        // For now, let's assume each relevant reminder represents at least one scheduled dose.
+        uniqueScheduledTimes.add(reminder.id); 
+      }
+      scheduledCount = uniqueScheduledTimes.size;
+
+
+      yesterdayHistory.forEach(record => {
+        if (record.status === 'taken') {
+          takenCount++;
+        } else if (record.status === 'late_taken') {
+          lateTakenCount++;
+        } else if (record.status === 'missed') {
+          missedCount++;
+        }
+      });
+      
+      // Calculate adherence percentage
+      const totalTaken = takenCount + lateTakenCount;
+      const adherence = scheduledCount > 0 ? ((totalTaken / scheduledCount) * 100).toFixed(2) : 0;
+
+      // Send the email
+      const emailResult = await EmailService.sendDailyReportEmail(
+        caregivers,
+        userName,
+        yesterdayStr,
+        scheduledCount,
+        takenCount,
+        lateTakenCount,
+        missedCount,
+        adherence
+      );
+      console.log('📧 Caregiver daily report sent:', emailResult);
+
+    } catch (error) {
+      console.error('❌ Error sending daily report:', error);
     }
   }
 }

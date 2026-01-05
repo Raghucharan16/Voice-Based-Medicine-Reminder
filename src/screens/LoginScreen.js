@@ -6,8 +6,19 @@ import AuthService from '../services/AuthService';
 const LoginScreen = ({ navigation, setUserToken }) => {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
 
   const handleLogin = async () => {
+    if (!username || !password || !confirmPassword) {
+      Alert.alert('Error', 'All fields are mandatory!');
+      return;
+    }
+
+    if (password !== confirmPassword) {
+      Alert.alert('Error', 'Passwords do not match!');
+      return;
+    }
+
     try {
       const user = await AuthService.login(username, password);
       Alert.alert('Success', 'Login successful!');
@@ -34,6 +45,13 @@ const LoginScreen = ({ navigation, setUserToken }) => {
           placeholder="Password"
           value={password}
           onChangeText={setPassword}
+          secureTextEntry
+        />
+        <TextInput
+          style={styles.input}
+          placeholder="Confirm Password"
+          value={confirmPassword}
+          onChangeText={setConfirmPassword}
           secureTextEntry
         />
         <TouchableOpacity style={styles.button} onPress={handleLogin}>
