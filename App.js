@@ -79,6 +79,8 @@ export default function App() {
         setTimeout(() => {
           console.log('⏰ Starting medication monitor...');
           MedicationMonitor.startMonitoring();
+          console.log('📊 Starting daily report monitor...');
+          MedicationMonitor.startDailyReportMonitoring();
         }, 3000);
       } catch (error) {
         console.error('❌ App initialization error:', error);
@@ -90,6 +92,7 @@ export default function App() {
 
     return () => {
       MedicationMonitor.stopMonitoring();
+      MedicationMonitor.stopDailyReportMonitoring();
     };
   }, []);
 
