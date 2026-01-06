@@ -1160,7 +1160,32 @@ Daily Report - Do Not Reply
     };
 
     console.log('✉️ Daily report prepared:', reportData);
-    
+
+    // If email transport is configured, send the report
+    if (emailTransporter) {
+      try {
+        const info = await emailTransporter.sendMail({
+          from: `"Medicine Reminder" <${EMAIL_USER}>`,
+          to: to,
+          subject: reportData.subject,
+          text: reportData.message,
+          html: `<pre style="font-family: Arial, sans-serif;">${reportData.message.replace(/\n/g, '<br/>')}</pre>`
+        });
+
+        console.log('✅ Daily report email sent:', info.messageId);
+        return res.json({
+          success: true,
+          message: 'Daily report sent',
+          emailId: info.messageId,
+          processingTime: Date.now() - startTime
+        });
+      } catch (emailError) {
+        console.error('❌ Failed to send daily report email:', emailError);
+        return res.status(500).json({ success: false, error: emailError.message });
+      }
+    }
+
+    // Demo fallback
     res.json({
       success: true,
       message: 'Daily report prepared (demo mode)',
@@ -1175,6 +1200,41 @@ Daily Report - Do Not Reply
       success: false,
       error: error.message
     });
+  }
+});
+
+
+/**
+ * Generic send-email endpoint used by client services
+ */
+app.post('/send-email', async (req, res) => {
+  try {
+    const { to, subject, text, html } = req.body;
+    console.log('📧 /send-email request for:', to);
+
+    if (emailTransporter) {
+      try {
+        const info = await emailTransporter.sendMail({
+          from: `"Medicine Reminder" <${EMAIL_USER}>`,
+          to,
+          subject,
+          text,
+          html
+        });
+        console.log('✅ Email sent via /send-email:', info.messageId);
+        return res.json({ success: true, emailId: info.messageId });
+      } catch (err) {
+        console.error('❌ /send-email failed:', err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+    }
+
+    // Demo mode: log and return success
+    console.log('📋 /send-email DEMO MODE - email content:', { to, subject, text });
+    return res.json({ success: true, demo: true, message: 'Email logged (demo mode)' });
+  } catch (error) {
+    console.error('❌ /send-email error:', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
