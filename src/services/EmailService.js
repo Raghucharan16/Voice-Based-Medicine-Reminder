@@ -271,6 +271,52 @@ Your Medicine Reminder App`,
   }
 
   /**
+   * Send acknowledgement email when a previously-missed medication is later taken
+   */
+  async sendAcknowledgementEmail(caregivers, patientName, medicineName, scheduledTime, takenTime, delayMinutes) {
+    try {
+      const recipientEmails = caregivers.map(c => c.email);
+      if (recipientEmails.length === 0) {
+        console.log('No caregivers with emails found for acknowledgement.');
+        return { success: false, message: 'No caregivers with emails.' };
+      }
+
+      const response = await fetch(`${this.SERVER_URL}/send-email`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          to: recipientEmails,
+          subject: `Update: ${patientName} Took Medication - ${medicineName}`,
+          text: `Dear Caregiver,
+
+This is an update: ${patientName} has taken their ${medicineName} which was scheduled for ${scheduledTime}. The medication was recorded as taken at ${new Date(takenTime).toLocaleTimeString()} (delay: ${delayMinutes} minutes).
+
+Thank you,
+Your Medicine Reminder App`,
+          html: `
+            <p>Dear Caregiver,</p>
+            <p>This is an update: <strong>${patientName}</strong> has taken their <strong>${medicineName}</strong> which was scheduled for ${scheduledTime}. The medication was recorded as taken at ${new Date(takenTime).toLocaleTimeString()} (delay: ${delayMinutes} minutes).</p>
+            <p>Thank you,<br/>Your Medicine Reminder App</p>
+          `,
+        }),
+      });
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.message || `Email service error: ${response.status}`);
+      }
+
+      const data = await response.json();
+      console.log('✅ Acknowledgement email sent successfully:', data);
+      return { success: true, notified: recipientEmails.length };
+
+    } catch (error) {
+      console.error('Error sending acknowledgement email:', error);
+      return { success: false, message: error.message };
+    }
+  }
+
+  /**
    * Send daily report email to caregiver
    * @param {Array<Object>} caregivers - Array of caregiver objects with name and email
    * @param {string} patientName - Patient's name

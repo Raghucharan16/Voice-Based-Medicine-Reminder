@@ -415,21 +415,42 @@ class NotificationService {
   // Create trigger from time string (e.g., "8:30 PM")
   static createTriggerFromTime(timeString) {
     try {
-      const [time, period] = timeString.split(' ');
-      const [hours, minutes] = time.split(':').map(Number);
-      
-      let hour24 = hours;
-      if (period?.toUpperCase() === 'PM' && hours !== 12) {
-        hour24 += 12;
-      } else if (period?.toUpperCase() === 'AM' && hours === 12) {
-        hour24 = 0;
+      if (!timeString || typeof timeString !== 'string') {
+        // Fallback to noon
+        return { hour: 12, minute: 0, repeats: true };
       }
 
-      return {
-        hour: hour24,
-        minute: minutes || 0,
-        repeats: true,
-      };
+      const trimmed = timeString.trim();
+
+      // If contains AM/PM
+      const ampmMatch = trimmed.match(/\s?(AM|PM)$/i);
+      let hour24 = 12;
+      let minute = 0;
+
+      if (ampmMatch) {
+        const period = ampmMatch[1].toUpperCase();
+        const timePart = trimmed.replace(/\s?(AM|PM)$/i, '').trim();
+        const parts = timePart.split(':').map(p => Number(p));
+        hour24 = parts[0] || 12;
+        minute = parts[1] || 0;
+        if (period === 'PM' && hour24 !== 12) hour24 += 12;
+        if (period === 'AM' && hour24 === 12) hour24 = 0;
+      } else if (trimmed.includes(':')) {
+        // Could be 24-hour time like '21:30' or '9:30'
+        const parts = trimmed.split(':').map(p => Number(p));
+        hour24 = parts[0] ?? 12;
+        minute = parts[1] ?? 0;
+        // Normalize
+        hour24 = Math.max(0, Math.min(23, hour24));
+        minute = Math.max(0, Math.min(59, minute));
+      } else {
+        // Fallback numeric hour only
+        const h = Number(trimmed) || 12;
+        hour24 = Math.max(0, Math.min(23, h));
+        minute = 0;
+      }
+
+      return { hour: hour24, minute, repeats: true };
     } catch (error) {
       console.error('Error creating trigger from time:', error);
       // Fallback to 12:00 PM

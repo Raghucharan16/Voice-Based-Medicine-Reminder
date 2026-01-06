@@ -93,8 +93,53 @@ class DataService {
         const timeDiff = Math.abs(hScheduledDate - scheduledDate) / (1000 * 60);
         return timeDiff < 30; // Check within 30 minutes for same dose
       });
-      
+
+      // If a record already exists for this scheduled window
       if (alreadyRecorded) {
+        // If it was previously marked as 'missed', update it to taken/late_taken
+        if (alreadyRecorded.status === 'missed') {
+          const delay = this.calculateDelay(scheduledTime, actualTakenTime);
+          const newStatus = delay > this.LATE_TAKEN_GRACE_PERIOD_MINUTES ? 'late_taken' : 'taken';
+
+          alreadyRecorded.actualTime = actualTakenTime;
+          alreadyRecorded.status = newStatus;
+          alreadyRecorded.delay = delay;
+
+          // Persist updated history
+          const updatedHistory = history.map(h => h.id === alreadyRecorded.id ? alreadyRecorded : h);
+          await AsyncStorage.setItem(this.KEYS.MEDICATION_HISTORY, JSON.stringify(updatedHistory));
+
+          console.log('🔁 Updated missed record to', newStatus, { medicationId, scheduledTime, existingRecord: alreadyRecorded.id });
+
+          // If caregivers were alerted for this missed dose, send acknowledgement
+          try {
+            const alertedKey = `alerted_${medicationId}_${scheduledDateStr}`;
+            const alertedVal = await AsyncStorage.getItem(alertedKey);
+            if (alertedVal === 'true') {
+              const caretakers = await this.getCaretakers();
+              const patientName = (await this.getUserProfile()).name || 'Patient';
+              const EmailService = require('./EmailService').default;
+              const reminders = await this.getReminders();
+              const reminder = reminders.find(r => r.id === medicationId) || {};
+              await EmailService.sendAcknowledgementEmail(
+                caretakers,
+                patientName,
+                reminder.medicine || 'medicine',
+                scheduledTime,
+                actualTakenTime,
+                delay
+              );
+
+              // Clear the alerted flag so we don't ack repeatedly
+              await AsyncStorage.removeItem(alertedKey);
+            }
+          } catch (e) {
+            console.warn('Error sending acknowledgement email:', e);
+          }
+
+          return alreadyRecorded;
+        }
+
         console.log('⚠️ Medication already recorded for this scheduled time:', {
           medicationId,
           scheduledTime,
@@ -143,6 +188,24 @@ class DataService {
       return record;
     } catch (error) {
       console.error('Error recording medication taken:', error);
+      throw error;
+    }
+  }
+
+  // Record a medication explicitly as late taken (wrapper for UI calls)
+  static async recordMedicationLateTaken(medicationId, scheduledTime, actualTime = null) {
+    try {
+      const actualTakenTime = actualTime || new Date().toISOString();
+      // Force late_taken by providing an actualTime sufficiently after scheduledTime
+      const scheduled = new Date(scheduledTime);
+      const forcedActual = new Date(actualTakenTime);
+      // If actual is not at least 16 minutes after scheduled, push it forward to mark late
+      if ((forcedActual - scheduled) / (1000 * 60) <= this.LATE_TAKEN_GRACE_PERIOD_MINUTES) {
+        forcedActual.setMinutes(scheduled.getMinutes() + this.LATE_TAKEN_GRACE_PERIOD_MINUTES + 1);
+      }
+      return await this.recordMedicationTaken(medicationId, scheduledTime, forcedActual.toISOString());
+    } catch (error) {
+      console.error('Error recording medication late taken:', error);
       throw error;
     }
   }

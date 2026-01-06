@@ -264,13 +264,13 @@ class MedicationMonitor {
    */
   static async checkAndSendDailyReport() {
     const now = new Date();
-    // Assuming report should be sent at 9 AM daily
-    if (now.getHours() === 9 && now.getMinutes() >= 0 && now.getMinutes() < 1) { // Trigger at 9:00 AM once
+    // Send the daily report after 11 PM (23:00) once per day
+    // If the app wasn't running exactly at 23:00, allow sending any time after 23:00 until midnight
+    if (now.getHours() >= 23) {
       const lastReportDate = await AsyncStorage.getItem('lastDailyReportDate');
       const today = now.toDateString();
-
       if (lastReportDate !== today) {
-        console.log('⏰ Time to send daily report!');
+        console.log('⏰ Time to send daily report (post 11pm)!');
         await this.sendDailyReport();
         await AsyncStorage.setItem('lastDailyReportDate', today);
       } else {
