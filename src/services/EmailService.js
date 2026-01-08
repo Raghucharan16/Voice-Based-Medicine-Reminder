@@ -325,9 +325,11 @@ Your Medicine Reminder App`,
    * @param {number} takenDoses - Total taken doses
    * @param {number} lateDoses - Total late doses
    * @param {number} missedDoses - Total missed doses
-   * @param {number} adherencePercentage - Adherence percentage
+   * @param {number|string} adherencePercentage - Adherence percentage
+   * @param {Array<Object>} medicationsTaken - Array of taken medication items {name, dosage, scheduledTime, actualTime, status}
+   * @param {Array<Object>} missedMedications - Array of missed medication items {name, dosage, scheduledTime}
    */
-  async sendDailyReportEmail(caregivers, patientName, reportDate, scheduledDoses, takenDoses, lateDoses, missedDoses, adherencePercentage) {
+  async sendDailyReportEmail(caregivers, patientName, reportDate, scheduledDoses, takenDoses, lateDoses, missedDoses, adherencePercentage, medicationsTaken = [], missedMedications = []) {
     try {
       const recipientEmails = caregivers.map(c => c.email);
       if (recipientEmails.length === 0) {
@@ -335,28 +337,62 @@ Your Medicine Reminder App`,
         return { success: false, message: 'No caregivers with emails.' };
       }
 
+      const formatListText = (items) => {
+        if (!items || items.length === 0) return 'None';
+        return items.map(i => {
+          const name = i.name || 'Unknown';
+          const dosage = i.dosage ? ` (${i.dosage})` : '';
+          const time = i.actualTime || i.scheduledTime || '';
+          return `- ${name}${dosage} - ${time}`;
+        }).join('\n');
+      };
+
+      const formatListHtml = (items) => {
+        if (!items || items.length === 0) return '<li>None</li>';
+        return items.map(i => {
+          const name = i.name || 'Unknown';
+          const dosage = i.dosage ? ` (${i.dosage})` : '';
+          const time = i.actualTime || i.scheduledTime || '';
+          return `<li>${name}${dosage} — ${time}</li>`;
+        }).join('');
+      };
+
+      const takenText = formatListText(medicationsTaken);
+      const missedText = formatListText(missedMedications);
+      const takenHtml = `<ul>${formatListHtml(medicationsTaken)}</ul>`;
+      const missedHtml = `<ul>${formatListHtml(missedMedications)}</ul>`;
+
+      const textBody = `Dear Caregiver,\n\nReport Date: ${reportDate}\n\nOverall Medication Adherence: ${adherencePercentage}%\n\nSummary:\n- Total medications scheduled: ${scheduledDoses}\n- Medications taken on time: ${takenDoses}\n- Medications missed: ${missedDoses}\n\nMedications Taken:\n${takenText}\n\nMissed Medication:\n${missedText}\n\nSincerely,\nYour Medicine Reminder App`;
+
+      const htmlBody = `
+        <div>
+          <h3>Report Date: ${reportDate}</h3>
+          <h2>Overall Medication Adherence: ${adherencePercentage}%</h2>
+          <h3>Summary:</h3>
+          <ul>
+            <li><strong>Total medications scheduled:</strong> ${scheduledDoses}</li>
+            <li><strong>Medications taken on time:</strong> ${takenDoses}</li>
+            <li><strong>Medications missed:</strong> ${missedDoses}</li>
+          </ul>
+
+          <h3>Medications Taken:</h3>
+          ${takenHtml}
+
+          <h3>Missed Medication:</h3>
+          ${missedHtml}
+
+          <p>Sincerely,<br/>Your Medicine Reminder App</p>
+        </div>
+      `;
+
       const response = await fetch(`${this.SERVER_URL}/send-email`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           to: recipientEmails,
           subject: `Daily Medication Report for ${patientName} - ${reportDate}`,
-          text: `Dear Caregiver,
-
-Here is the daily medication adherence report for ${patientName} for ${reportDate}:
-
-Summary:
-- Scheduled Doses: ${scheduledDoses}
-- Taken Doses (on time): ${takenDoses}
-- Taken Doses (late): ${lateDoses}
-- Missed Doses: ${missedDoses}
-
-Overall Adherence: ${adherencePercentage}%
-
-For a detailed view, please check the app.
-
-Sincerely,
-Your Medicine Reminder App`,
+          text: textBody,
+          html: htmlBody,
         }),
         timeout: 15000,
       });

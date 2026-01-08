@@ -5,6 +5,7 @@
 
 import DataService from './DataService';
 import NotificationService from './NotificationService';
+const EmailService = require('./EmailService').default;
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 class MedicationMonitor {
@@ -340,7 +341,28 @@ class MedicationMonitor {
       const totalTaken = takenCount + lateTakenCount;
       const adherence = scheduledCount > 0 ? ((totalTaken / scheduledCount) * 100).toFixed(2) : 0;
 
-      // Send the email
+      // Build itemized medication lists for the report
+      const medicationsTaken = [];
+      const missedMedicationsList = [];
+
+      for (const record of yesterdayHistory) {
+        const reminder = reminders.find(r => r.id === record.medicationId) || {};
+        const item = {
+          name: reminder.medicine || 'Unknown',
+          dosage: reminder.dosage || reminder.amount || '',
+          scheduledTime: new Date(record.scheduledTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          actualTime: record.actualTime ? new Date(record.actualTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : null,
+          status: record.status
+        };
+
+        if (record.status === 'taken' || record.status === 'late_taken') {
+          medicationsTaken.push(item);
+        } else if (record.status === 'missed') {
+          missedMedicationsList.push(item);
+        }
+      }
+
+      // Send the email with detailed lists
       const emailResult = await EmailService.sendDailyReportEmail(
         caregivers,
         userName,
@@ -349,7 +371,9 @@ class MedicationMonitor {
         takenCount,
         lateTakenCount,
         missedCount,
-        adherence
+        adherence,
+        medicationsTaken,
+        missedMedicationsList
       );
       console.log('📧 Caregiver daily report sent:', emailResult);
 
